@@ -5,6 +5,7 @@ const QLTD_DEPT_PLAN_ROW_TYPE_PB_DETAIL = 'PB_DETAIL';
 
 function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, requestedDeptCode) {
   const action = 'listDeptPlans';
+  const performance = { rowsRead: 0, columnsRead: 0, cellsRead: 0, sheetCount: 0, sourceCount: 0 };
   const project = qltdProjectsGetByCode_(projectCode);
 
   if (!project) {
@@ -88,7 +89,7 @@ function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, request
         return;
       }
 
-      const deptPlan = qltdDeptPlanParseSheet_(sheet, project);
+      const deptPlan = qltdDeptPlanParseSheet_(sheet, project, performance);
 
       if (!deptPlan) {
         warnings.push({
@@ -136,7 +137,7 @@ function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, request
     });
   } else if (isAdminScope && !requestedCode) {
     ss.getSheets().forEach(function(sheet) {
-      const deptPlan = qltdDeptPlanParseSheet_(sheet, project);
+      const deptPlan = qltdDeptPlanParseSheet_(sheet, project, performance);
       if (deptPlan && deptPlan.masterCount > 0) {
         qltdDeptPlanEnrichWithMasterContext_(
           deptPlan,
@@ -157,7 +158,8 @@ function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, request
       departments: departments,
       warnings: warnings,
       apiStatus: 'CONNECTED',
-      source: 'dept_plan_service'
+      source: 'dept_plan_service',
+      performance: Object.assign(performance, { recordCount: departments.length })
     };
   }
 
@@ -179,7 +181,8 @@ function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, request
     departments: departments,
     warnings: warnings,
     apiStatus: 'CONNECTED',
-    source: 'dept_plan_service'
+    source: 'dept_plan_service',
+    performance: Object.assign(performance, { recordCount: departments.length })
   };
 }
 
@@ -229,8 +232,17 @@ function qltdDeptPlanFindMappedSortOrder_(mappedDepts, deptPlan) {
   return Number(match && match.sortOrder || 9999);
 }
 
-function qltdDeptPlanParseSheet_(sheet, project) {
-  const values = sheet.getDataRange().getValues();
+function qltdDeptPlanParseSheet_(sheet, project, performance) {
+  const lastRow = Math.max(1, sheet.getLastRow());
+  const lastColumn = Math.max(1, sheet.getLastColumn());
+  const values = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
+  if (performance) {
+    performance.rowsRead += lastRow;
+    performance.columnsRead = Math.max(performance.columnsRead, lastColumn);
+    performance.cellsRead += lastRow * lastColumn;
+    performance.sheetCount += 1;
+    performance.sourceCount = performance.sheetCount + 1;
+  }
   if (!values || values.length < 3) return null;
 
   const deptCode = qltdDeptPlanFindDeptCode_(values, sheet.getName());

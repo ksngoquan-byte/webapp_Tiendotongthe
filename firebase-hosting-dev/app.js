@@ -799,7 +799,26 @@ const QLTD_WEEKLY_DEPT_ACCESS_MESSAGE = 'Bạn không được cấp quyền tru
 const QLTD_PLAN_DEPT_ACCESS_MESSAGE = 'Bạn không có quyền truy cập dữ liệu của phòng/ban này.';
 
 function qltdDevPerfEnabled() {
-  return ['localhost', '127.0.0.1'].includes(window.location.hostname) || new URLSearchParams(window.location.search).has('debugPerf');
+  return ['localhost', '127.0.0.1'].includes(window.location.hostname) ||
+    new URLSearchParams(window.location.search).get('debugPerf') === '1';
+}
+
+function qltdLogBackendPerformance(action, totalMs, payload) {
+  if (!qltdDevPerfEnabled()) return;
+  const server = payload && payload.performance || {};
+  console.info('[QLTD PERF]', {
+    requestId: server.requestId || '',
+    action,
+    totalMs: Math.round(totalMs),
+    serverMs: Number(server.serverMs || server.durationMs || 0),
+    responseBytes: Number(server.responseBytes || 0),
+    rowsRead: Number(server.rowsRead || 0),
+    cellsRead: Number(server.cellsRead || 0),
+    recordCount: Number(server.recordCount || 0),
+    cacheHit: !!server.cacheHit,
+    sourceCount: Number(server.sourceCount || 0),
+    sheetCount: Number(server.sheetCount || 0)
+  });
 }
 
 function findPrimaryNavContainer() {
@@ -9753,6 +9772,7 @@ async function fetchBackendJson(action, params = {}, options = {}) {
         url.searchParams.set(key, value);
       }
     });
+    if (qltdDevPerfEnabled()) url.searchParams.set('debugPerf', '1');
 
     if (includeAuth && auth && auth.currentUser) {
       url.searchParams.set('email', auth.currentUser.email || url.searchParams.get('email') || '');
@@ -9776,7 +9796,7 @@ async function fetchBackendJson(action, params = {}, options = {}) {
       continue;
     }
 
-    if (qltdDevPerfEnabled()) console.info(`[QLTD PERF] ${action}: ${Math.round(performance.now() - startedAt)}ms`);
+    qltdLogBackendPerformance(action, performance.now() - startedAt, payload);
     return payload;
   }
 }

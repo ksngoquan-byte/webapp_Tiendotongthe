@@ -123,13 +123,23 @@ function qltdNotificationsList_(params) {
   const limit = isFinite(requestedLimit) && requestedLimit > 0
     ? Math.min(Math.floor(requestedLimit), QLTD_NOTIFICATIONS_MAX_LIMIT)
     : QLTD_NOTIFICATIONS_DEFAULT_LIMIT;
-  return qltdWorkOk_(QLTD_NOTIFICATIONS_SOURCE, action, {
+  const result = qltdWorkOk_(QLTD_NOTIFICATIONS_SOURCE, action, {
     notifications: owned.slice(0, limit),
     unreadCount: unreadCount,
     actionRequiredCount: actionRequiredCount,
     totalCount: owned.length,
     limit: limit
   }, [], { email: auth.email });
+  result.performance = {
+    rowsRead: read.rawRows.length,
+    columnsRead: QLTD_NOTIFICATIONS_HEADERS.length,
+    cellsRead: read.rawRows.length * QLTD_NOTIFICATIONS_HEADERS.length,
+    recordCount: owned.length,
+    sheetCount: 1,
+    sourceCount: 1,
+    cacheHit: false
+  };
+  return result;
 }
 
 function qltdNotificationsMarkRead_(payload) {

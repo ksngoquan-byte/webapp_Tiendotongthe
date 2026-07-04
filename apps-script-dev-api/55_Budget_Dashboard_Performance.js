@@ -74,9 +74,21 @@ function qltdBudgetGetLiveDashboardOptimized_(params) {
     model.departmentViewCount = Object.keys(departmentViews).length;
   }
 
-  return qltdBudgetOk_(action, model, (projectsResult.warnings || [])
+  const result = qltdBudgetOk_(action, model, (projectsResult.warnings || [])
     .concat(deptWarnings)
     .concat(itemsResult.warnings || [])
     .concat(allocationsResult.warnings || [])
     .concat(rawResult.warnings || []), meta);
+  result.performance = {
+    rowsRead: (projectsResult.projects || []).length +
+      (deptsResult.departments || []).length +
+      (itemsResult.items || []).length +
+      (allocationsResult.allocations || []).length +
+      (rawResult.rows || []).length,
+    recordCount: Number(model && model.departmentViewCount || 0),
+    sheetCount: 5,
+    sourceCount: 5,
+    cacheHit: false
+  };
+  return result;
 }

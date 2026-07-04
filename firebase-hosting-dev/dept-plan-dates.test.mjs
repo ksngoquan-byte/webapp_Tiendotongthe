@@ -16,7 +16,12 @@ const dates = [
   ['V.3.2', 'Công việc 5', '2026-06-12', '2026-07-11', 'M-5', 'MASTER']
 ];
 const values = [headers, ...dates];
-const sheet = { getName: () => 'PTDA', getDataRange: () => ({ getValues: () => values }) };
+const sheet = {
+  getName: () => 'PTDA',
+  getLastRow: () => values.length,
+  getLastColumn: () => headers.length,
+  getRange: () => ({ getValues: () => values })
+};
 const parsed = context.api.parse(sheet, { projectCode: '24-1.ĐB' });
 
 assert.equal(context.api.normalize('Ngày bắt đầu kế hoạch'), 'NGAYBATDAUKEHOACH');

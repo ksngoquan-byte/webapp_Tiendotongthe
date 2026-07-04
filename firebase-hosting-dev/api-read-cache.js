@@ -70,7 +70,13 @@ function seedProjectsFromBootstrap(url, bootstrap) {
     success: true,
     projects: bootstrap.projects,
     apiStatus: bootstrap.apiStatus || 'CONNECTED',
-    source: bootstrap.source || 'users_and_projects_sheets'
+    source: bootstrap.source || 'users_and_projects_sheets',
+    performance: {
+      ...(bootstrap.performance || {}),
+      action: 'listProjects',
+      cacheHit: true,
+      recordCount: bootstrap.projects.length
+    }
   };
 
   const withEmail = new URL(url);
@@ -102,7 +108,14 @@ async function fetchProfileThroughBootstrap(originalFetch, input, init, url) {
   }
 
   seedProjectsFromBootstrap(url, bootstrap);
-  return jsonResponse(bootstrap.profile, bootstrapResponse.status, Array.from(bootstrapResponse.headers.entries()));
+  const profile = {
+    ...bootstrap.profile,
+    performance: {
+      ...(bootstrap.performance || {}),
+      action: 'profile'
+    }
+  };
+  return jsonResponse(profile, bootstrapResponse.status, Array.from(bootstrapResponse.headers.entries()));
 }
 
 function seedDepartmentDashboards(url, body, status, headers) {
