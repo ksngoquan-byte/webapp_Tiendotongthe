@@ -68,6 +68,7 @@ let qltdSelectedMonthCode = getDefaultMonthCode();
 let qltdSelectedMasterCode = '';
 let qltdSelectedWeekId = '';
 let qltdGanttPayload = null;
+let qltdDashboardPayload = null;
 let qltdGanttZoom = 'month';
 let qltdGanttShowLinks = true;
 let qltdGanttShowDates = true;
@@ -78,6 +79,7 @@ const qltdGanttBudgetLoadingProjects = new Set();
 const qltdGanttDataRequests = new Map();
 let qltdGanttRequestTail = Promise.resolve();
 let qltdGanttLoadRequestSeq = 0;
+let qltdDashboardLoadRequestSeq = 0;
 const QLTD_GANTT_REQUEST_TIMEOUT_MS = 40000;
 const QLTD_GANTT_BUSY_RETRY_DELAY_MS = 1500;
 const QLTD_GANTT_BUSY_MAX_DELAY_MS = 6000;
@@ -717,6 +719,7 @@ function renderProjectOptions(projects = []) {
     selector.appendChild(option);
     selector.disabled = true;
     qltdGanttPayload = null;
+    qltdDashboardPayload = null;
     if (status) {
       status.textContent = 'Ch\u01b0a c\u00f3 d\u1ef1 \u00e1n';
       status.classList.remove('hidden');
@@ -737,9 +740,8 @@ function renderProjectOptions(projects = []) {
   const hasStoredProject = projects.some((project) => project.projectCode === storedProjectCode);
   selector.value = hasStoredProject ? storedProjectCode : projects[0].projectCode;
   setStoredProjectCode(selector.value);
-  if (qltdActiveView === 'dashboard' || qltdActiveView === 'gantt') {
-    loadGanttDataForSelectedProject(selector.value);
-  }
+  if (qltdActiveView === 'dashboard') loadDashboardDataForSelectedProject(selector.value);
+  if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
 
   if (status) {
     status.textContent = '';
@@ -752,9 +754,8 @@ function renderProjectOptions(projects = []) {
     if (qltdActiveView === 'report') loadDeptPlansForSelectedProject(selector.value);
     if (qltdActiveView === 'budget') loadBudgetDashboardForSelectedProject({ force: true });
     if (qltdActiveView === 'admin') loadAdminMasterApprovals();
-    if (qltdActiveView === 'dashboard' || qltdActiveView === 'gantt') {
-      loadGanttDataForSelectedProject(selector.value);
-    }
+    if (qltdActiveView === 'dashboard') loadDashboardDataForSelectedProject(selector.value);
+    if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
   };
 }
 
@@ -1854,7 +1855,18 @@ function showWeb07View(viewName, options = {}) {
     ));
   });
 
-  if (viewName === 'dashboard' || viewName === 'gantt') {
+  if (viewName === 'dashboard') {
+    const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+    const needsDashboardData = projectCode && (
+      qltdGanttDirtyProjects.has(projectCode) ||
+      !qltdDashboardPayload ||
+      String(qltdDashboardPayload.projectCode || '') !== String(projectCode)
+    );
+    if (needsDashboardData) viewLoadPromise = loadDashboardDataForSelectedProject(projectCode);
+    else renderDashboardFromGanttData(qltdDashboardPayload);
+  }
+
+  if (viewName === 'gantt') {
     const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
     const needsGanttData = projectCode && (
       qltdGanttDirtyProjects.has(projectCode) ||
@@ -5996,6 +6008,39 @@ function qltdWeb07RequestGanttPayload(projectCode, options = {}) {
   return qltdWeb07GetOrCreateGanttRequest(requestKey, () => qltdWeb07FetchGanttPayload(code, options));
 }
 
+function qltdWeb07RequestDashboardPayload(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code) return Promise.resolve(null);
+  const requestKey = options.forceRefresh ? code + '::force' : code;
+  return qltdWeb07GetOrCreateGanttRequest('dashboard::' + requestKey, () => fetchBackendJson('dashboardSummary', {
+    projectCode: code,
+    forceRefresh: options.forceRefresh ? '1' : ''
+  }, { auth: true }));
+}
+
+async function loadDashboardDataForSelectedProject(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code) return null;
+  const selectedProjectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+  if (selectedProjectCode && String(selectedProjectCode) !== code) return null;
+  const requestSeq = ++qltdDashboardLoadRequestSeq;
+  if (options.forceRefresh && qltdGanttPayload && String(qltdGanttPayload.projectCode || '') === code) {
+    qltdGanttPayload = null;
+  }
+  renderDashboardLoading(code);
+  try {
+    const payload = await qltdWeb07RequestDashboardPayload(code, options);
+    if (requestSeq !== qltdDashboardLoadRequestSeq || qltdActiveView !== 'dashboard') return payload;
+    qltdDashboardPayload = payload;
+    await loadMainMilestonesForProject(code, payload);
+    renderDashboardFromGanttData(payload);
+    return payload;
+  } catch (error) {
+    if (requestSeq === qltdDashboardLoadRequestSeq && qltdActiveView === 'dashboard') renderDashboardError(error);
+    return null;
+  }
+}
+
 function loadGanttDataForSelectedProject(projectCode, options = {}) {
   const code = String(projectCode || '').trim();
   if (!code) return Promise.resolve(null);
@@ -6011,7 +6056,6 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
   const requestSeq = ++qltdGanttLoadRequestSeq;
   ensureWeb07Panels();
   renderGanttLoading(projectCode);
-  renderDashboardLoading(projectCode);
 
   try {
     const scheduleStateRequest = loadProjectScheduleState(projectCode, { render: false });
@@ -6026,9 +6070,10 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
     await scheduleStateRequest;
     if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return payload;
     qltdGanttPayload = payload;
+    qltdDashboardPayload = payload;
     if (qltdActiveView === 'report' && qltdDeptPlanPayload?.success) renderDeptPlans(qltdDeptPlanPayload);
     await loadMainMilestonesForProject(projectCode, payload);
-    renderDashboardFromGanttData(payload);
+    if (qltdActiveView === 'dashboard') renderDashboardFromGanttData(payload);
     renderGanttPanel(payload);
     qltdGanttDirtyProjects.delete(projectCode);
     qltdGanttForceRefreshProjects.delete(projectCode);
@@ -6037,7 +6082,7 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
     console.error('Cannot load gantt data', error);
     if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return null;
     qltdGanttPayload = null;
-    renderDashboardError(error);
+    if (qltdActiveView === 'dashboard') renderDashboardError(error);
     renderGanttError(error);
     return null;
   }
@@ -6285,7 +6330,10 @@ function renderDashboardFromGanttData(payload) {
   bindDashboardContextFilters(payload);
   const refreshButton = document.getElementById('execRefreshButton');
   if (refreshButton) {
-    refreshButton.onclick = () => loadGanttDataForSelectedProject(payload.projectCode || getStoredProjectCode());
+    refreshButton.onclick = () => loadDashboardDataForSelectedProject(
+      payload.projectCode || getStoredProjectCode(),
+      { forceRefresh: true }
+    );
   }
 }
 
@@ -6303,7 +6351,7 @@ function bindDashboardModeSwitch() {
       if (mode === qltdDashboardMode) return;
       qltdDashboardMode = mode;
       if (mode === 'department') loadAndRenderDepartmentDashboard();
-      else if (qltdGanttPayload) renderDashboardFromGanttData(qltdGanttPayload);
+      else if (qltdDashboardPayload) renderDashboardFromGanttData(qltdDashboardPayload);
     };
   });
 }
@@ -6315,7 +6363,7 @@ async function getDepartmentDashboardPayloads(projectCode, forceRefresh) {
     const code = String(project.projectCode || '');
     if (!forceRefresh && qltdDepartmentDashboardCache.has(code)) return qltdDepartmentDashboardCache.get(code);
     try {
-      const payload = await qltdWeb07RequestGanttPayload(code, { forceRefresh: !!forceRefresh });
+      const payload = await qltdWeb07RequestDashboardPayload(code, { forceRefresh: !!forceRefresh });
       if (!payload || payload.success === false) throw new Error(payload && (payload.message || payload.error) || 'INVALID_PAYLOAD');
       qltdDepartmentDashboardCache.set(code, payload);
       return payload;
@@ -6975,7 +7023,12 @@ function bindDashboardTaskLinks() {
 async function openDashboardTaskInGantt(taskId, projectCode = '') {
   if (!taskId) return;
   const targetProjectCode = String(projectCode || '').trim();
-  const currentProjectCode = String(qltdGanttPayload && qltdGanttPayload.projectCode || getStoredProjectCode() || '').trim();
+  const currentProjectCode = String(
+    targetProjectCode ||
+    document.getElementById('projectSelector')?.value ||
+    getStoredProjectCode() ||
+    ''
+  ).trim();
 
   if (targetProjectCode && targetProjectCode !== currentProjectCode) {
     const selector = document.getElementById('projectSelector');
@@ -6983,6 +7036,8 @@ async function openDashboardTaskInGantt(taskId, projectCode = '') {
     setStoredProjectCode(targetProjectCode);
     loadDeptPlansForSelectedProject(targetProjectCode);
     await loadGanttDataForSelectedProject(targetProjectCode);
+  } else if (!qltdGanttPayload || String(qltdGanttPayload.projectCode || '') !== currentProjectCode) {
+    await loadGanttDataForSelectedProject(currentProjectCode);
   }
 
   showWeb07View('gantt');

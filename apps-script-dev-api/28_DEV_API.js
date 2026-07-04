@@ -172,6 +172,10 @@ function qltdDevApiHandleGet(e) {
     return qltdDevApiGanttData_(params);
   }
 
+  if (action === 'dashboardsummary') {
+    return qltdDevApiDashboardSummary_(params);
+  }
+
   if (action === 'getmainmilestones') {
     return qltdDevApiJson_(qltdMainMilestonesGet_(params.projectCode, params.email));
   }
@@ -500,6 +504,23 @@ function qltdDevApiGanttData_(params) {
   const result = qltdGanttGetDataForProject_(projectCode);
   if (result && result.success !== false) {
     const milestones = qltdMainMilestonesGet_(projectCode, 'gantt-data@authenticated.local', true);
+    result.mainMilestoneSource = 'GOOGLE_SHEET';
+    result.mainMilestoneIds = milestones.ids || [];
+    result.mainMilestoneCodes = milestones.codes || [];
+  }
+  return qltdDevApiJson_(result);
+}
+
+function qltdDevApiDashboardSummary_(params) {
+  const projectCode = params && params.projectCode;
+  const forceRefresh = String(params && (params.forceRefresh || params.bypassCache) || '').trim() === '1' ||
+    String(params && (params.forceRefresh || params.bypassCache) || '').trim().toLowerCase() === 'true';
+  if (forceRefresh && typeof qltdGanttInvalidateCache_ === 'function') {
+    qltdGanttInvalidateCache_(projectCode);
+  }
+  const result = qltdDashboardGetSummaryForProject_(projectCode);
+  if (result && result.success !== false) {
+    const milestones = qltdMainMilestonesGet_(projectCode, 'dashboard-summary@authenticated.local', true);
     result.mainMilestoneSource = 'GOOGLE_SHEET';
     result.mainMilestoneIds = milestones.ids || [];
     result.mainMilestoneCodes = milestones.codes || [];

@@ -307,7 +307,8 @@ test('ganttData fetch passes AbortController signal and auto-load is view scoped
   const fetchSource = extractFunction(appSource, 'fetchBackendJson');
   assert.match(fetchSource, /signal: options\.signal/);
   const projectOptionsSource = extractFunction(appSource, 'renderProjectOptions');
-  assert.match(projectOptionsSource, /qltdActiveView === 'dashboard' \|\| qltdActiveView === 'gantt'/);
+  assert.match(projectOptionsSource, /qltdActiveView === 'dashboard'\) loadDashboardDataForSelectedProject/);
+  assert.match(projectOptionsSource, /qltdActiveView === 'gantt'\) loadGanttDataForSelectedProject/);
 });
 
 test('loader protects current project from stale success and stale error rendering', () => {
@@ -347,7 +348,7 @@ test('all frontend ganttData physical calls go through the shared coordinator', 
   assert.equal((appSource.match(/fetchBackendJson\s*\(\s*['"]ganttData['"]/g) || []).length, 0);
   assert.equal((appSource.match(/fetcher\s*\(\s*['"]ganttData['"]/g) || []).length, 1);
   const departmentSource = extractFunction(appSource, 'getDepartmentDashboardPayloads');
-  assert.match(departmentSource, /qltdWeb07RequestGanttPayload\(code/);
+  assert.match(departmentSource, /qltdWeb07RequestDashboardPayload\(code/);
   assert.doesNotMatch(departmentSource, /fetchBackendJson\s*\(/);
 });
 
@@ -378,7 +379,7 @@ test('department dashboard A/B/C uses the physical lane, preserves cache, and co
     }
   };
   vm.createContext(dashboardContext);
-  vm.runInContext(`${helpersSource}\n${extractFunction(appSource, 'getDepartmentDashboardPayloads')}\nthis.runDashboard = getDepartmentDashboardPayloads;`, dashboardContext);
+  vm.runInContext(`${helpersSource}\n${extractFunction(appSource, 'qltdWeb07RequestDashboardPayload')}\n${extractFunction(appSource, 'getDepartmentDashboardPayloads')}\nthis.runDashboard = getDepartmentDashboardPayloads;`, dashboardContext);
 
   const result = await dashboardContext.runDashboard('', false);
   assert.deepEqual(requested, ['A', 'B', 'C']);

@@ -54,7 +54,7 @@ assert.match(dispatcherSource, /action === 'getprojectschedulestate'/);
 assert.match(dispatcherSource, /qltdProjectScheduleGetStateApi_/);
 assert.match(dispatcherSource, /action === 'recalculateprojectschedule'/);
 assert.match(dispatcherSource, /qltdProjectScheduleRecalculate_/);
-assert.match(indexSource, /app\.js\?v=GANTT_REQUEST_RACE_HOTFIX_3/);
-assert.match(indexSource, /__QLTD_GANTT_PATCH_ROUND__ = 'GANTT_REQUEST_RACE_HOTFIX_3'/);
+assert.match(indexSource, /app\.js\?v=PERF_WEBAPP_LOAD_V1/);
+assert.match(appSource, /__QLTD_GANTT_PATCH_ROUND__ = 'GANTT_REQUEST_RACE_HOTFIX_3'/);
 
 console.log('Project schedule recalculation frontend: PASS');

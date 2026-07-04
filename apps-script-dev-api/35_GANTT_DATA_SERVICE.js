@@ -672,6 +672,69 @@ function qltdGanttSuccess_(project, sourceSheet, data, links, summary, warnings,
   };
 }
 
+function qltdDashboardGetSummaryForProject_(projectCode) {
+  const source = qltdGanttGetDataForProject_(projectCode);
+  if (!source || source.success === false) return source;
+
+  const data = (source.data || []).map(function(task) {
+    return {
+      id: task.id,
+      text: task.text,
+      code: task.code,
+      masterTaskCode: task.masterTaskCode,
+      wbs: task.wbs,
+      wbsLevel: task.wbsLevel,
+      parent: task.parent,
+      rowType: task.rowType,
+      type: task.type,
+      status: task.status,
+      progress: task.progress,
+      start_date: task.start_date,
+      end_date: task.end_date,
+      deadline: task.deadline,
+      duration: task.duration,
+      baselineStart: task.baselineStart,
+      baselineEnd: task.baselineEnd,
+      actualStart: task.actualStart,
+      actualFinish: task.actualFinish,
+      actualEnd: task.actualEnd,
+      owner: task.owner,
+      deptCode: task.deptCode,
+      deptName: task.deptName,
+      zone: task.zone,
+      loaiCongTrinh: task.loaiCongTrinh,
+      congTrinh: task.congTrinh,
+      hangMuc: task.hangMuc,
+      contextPath: task.contextPath,
+      isCategoryRow: task.isCategoryRow,
+      is_milestone: task.is_milestone,
+      milestone: task.milestone,
+      ma_moc: task.ma_moc,
+      loai_cong_viec: task.loai_cong_viec
+    };
+  });
+  const performance = Object.assign({}, source.performance || {}, {
+    recordCount: data.length,
+    sourceCount: 1,
+    fullGanttTaskCount: (source.data || []).length,
+    fullGanttLinkCount: (source.links || []).length
+  });
+
+  return {
+    success: true,
+    projectCode: source.projectCode,
+    projectName: source.projectName,
+    sourceSheet: source.sourceSheet,
+    data: data,
+    summary: source.summary,
+    warnings: source.warnings || [],
+    generatedAt: performance.generatedAt || new Date().toISOString(),
+    performance: performance,
+    apiStatus: source.apiStatus,
+    source: 'dashboard_summary_from_gantt'
+  };
+}
+
 function qltdGanttError_(error, message, warnings, extra) {
   const payload = Object.assign({
     success: false,

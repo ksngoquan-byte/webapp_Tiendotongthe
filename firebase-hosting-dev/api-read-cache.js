@@ -210,7 +210,7 @@ export function installApiReadCache(target = window) {
         if (normalizedAction === 'budget_getlivedashboard') {
           seedDepartmentDashboards(url, body, response.status, headers);
         }
-        if (normalizedAction === 'ganttdata') {
+        if (normalizedAction === 'ganttdata' || normalizedAction === 'dashboardsummary') {
           seedMilestonesFromGantt(url, body);
         }
       }
