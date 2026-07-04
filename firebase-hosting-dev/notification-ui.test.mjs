@@ -190,7 +190,7 @@ assert.match(loadSource, /\{ auth: true \}/);
 assert.match(loadSource, /qltdNotificationLoadPromise/);
 assert.match(loadSource, /notifications: \[\]/);
 const renderAppSource = extractFunction(app, 'renderApp');
-assert.match(renderAppSource, /void loadNotifications\(\)/);
+assert.match(renderAppSource, /scheduleNotificationsLoad\(\)/);
 
 const approvalDeepLink = extractFunction(app, 'navigateNotificationApproval');
 assert.match(approvalDeepLink, /selectNotificationProject/);

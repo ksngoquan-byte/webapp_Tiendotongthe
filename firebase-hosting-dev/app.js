@@ -9805,6 +9805,17 @@ async function fetchBackendProfile() {
   return fetchBackendJson('profile');
 }
 
+function scheduleNotificationsLoad() {
+  const run = () => {
+    if (auth?.currentUser && isAuthenticatedUser()) void loadNotifications();
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 3000 });
+  } else {
+    window.setTimeout(run, 1200);
+  }
+}
+
 function renderApp(user, role, profile = {}) {
   registrationGate?.hide();
   showOnly(els.appShell);
@@ -9819,7 +9830,7 @@ function renderApp(user, role, profile = {}) {
   bindWeb07Navigation();
   showWeb07View('dashboard');
   qltdProjectsLoadPromise = loadProjectsForSelector();
-  void loadNotifications();
+  scheduleNotificationsLoad();
 
   if (els.userAvatar) {
     els.userAvatar.src = user.photoURL || '';
