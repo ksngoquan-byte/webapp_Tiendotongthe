@@ -9802,7 +9802,6 @@ async function fetchBackendJson(action, params = {}, options = {}) {
 }
 
 async function fetchBackendProfile() {
-  await fetchBackendJson('health');
   return fetchBackendJson('profile');
 }
 
