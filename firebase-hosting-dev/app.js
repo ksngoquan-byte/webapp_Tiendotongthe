@@ -312,9 +312,24 @@ function canExportExcel(profile = currentUserProfile) {
   return isAuthenticatedUser(profile);
 }
 
+function getDelegatedDeptManagerScopes(profile = currentUserProfile) {
+  return (Array.isArray(profile?.delegatedScopes) ? profile.delegatedScopes : []).filter((scope) =>
+    String(scope?.permissionCode || '').trim().toUpperCase() === 'DEPT_MANAGER'
+  );
+}
+
+function hasDelegatedDeptManagerScope(projectCode = '', deptCode = '', profile = currentUserProfile) {
+  const project = String(projectCode || '').trim().toUpperCase();
+  const dept = String(deptCode || '').trim().toUpperCase();
+  return getDelegatedDeptManagerScopes(profile).some((scope) =>
+    (!project || String(scope.projectCode || '').trim().toUpperCase() === project) &&
+    (!dept || String(scope.deptCode || '').trim().toUpperCase() === dept)
+  );
+}
+
 function canApprove(profile = currentUserProfile) {
   const role = normalizeRoleKey(profile && profile.role);
-  return ['ADMIN', 'PMO', 'EDITOR'].includes(role);
+  return ['ADMIN', 'PMO', 'EDITOR'].includes(role) || getDelegatedDeptManagerScopes(profile).length > 0;
 }
 
 function canAdmin(profile = currentUserProfile) {
@@ -660,7 +675,8 @@ function applyPermissions(profile = {}) {
   const nextWeeklyIdentity = [
     String(profile.email || '').trim().toLowerCase(),
     normalizeRoleKey(profile.role),
-    JSON.stringify(profile.permissions || {})
+    JSON.stringify(profile.permissions || {}),
+    JSON.stringify(profile.delegatedScopes || [])
   ].join('::');
   if (qltdWeeklyTaskCacheIdentity !== nextWeeklyIdentity) clearWeeklyTaskSessionState();
   qltdWeeklyTaskCacheIdentity = nextWeeklyIdentity;
@@ -2471,7 +2487,8 @@ function renderAdminPanel() {
     panel.innerHTML = '<div class="web07-card"><p class="empty-state">Bạn không có quyền phê duyệt.</p></div>';
     return;
   }
-  if (normalizeRoleKey(currentUserProfile?.role) === 'EDITOR') {
+  const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+  if (normalizeRoleKey(currentUserProfile?.role) === 'EDITOR' || hasDelegatedDeptManagerScope(projectCode)) {
     renderPbDetailApprovalPanel(panel);
     return;
   }
@@ -2543,7 +2560,8 @@ function formatApprovalStatus(status, compact = false) {
 
 async function loadAdminMasterApprovals() {
   if (!canApprove()) return;
-  if (normalizeRoleKey(currentUserProfile?.role) === 'EDITOR') {
+  const selectedProjectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+  if (normalizeRoleKey(currentUserProfile?.role) === 'EDITOR' || hasDelegatedDeptManagerScope(selectedProjectCode)) {
     return loadPbDetailApprovals();
   }
   const seq = ++qltdAdminApprovalRequestSeq;
@@ -2600,7 +2618,8 @@ function renderPbDetailApprovals(approvals) {
 }
 
 async function loadPbDetailApprovals() {
-  if (normalizeRoleKey(currentUserProfile?.role) !== 'EDITOR') return;
+  const selectedProjectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+  if (normalizeRoleKey(currentUserProfile?.role) !== 'EDITOR' && !hasDelegatedDeptManagerScope(selectedProjectCode)) return;
   const seq = ++qltdPbDetailApprovalRequestSeq;
   const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
   qltdPbDetailApprovalView = { ...qltdPbDetailApprovalView, projectCode, loading: true, error: '' };
@@ -2633,9 +2652,12 @@ async function reviewPbDetailApproval(updateId, approvalStatus, reviewReason = '
   };
   renderAdminPanel();
   try {
+    const target = (qltdPbDetailApprovalView.approvals || []).find((item) => item.updateId === updateId) || {};
     const result = await postBackendJson({
       action: 'weekly_pbdetailapproval_review',
       email: currentUserProfile?.email || '',
+      projectCode: target.projectCode || qltdPbDetailApprovalView.projectCode || '',
+      deptCode: target.deptCode || '',
       updateId,
       approvalStatus,
       reviewReason
@@ -2718,7 +2740,9 @@ function scrollToNotificationTarget(kind, targetId) {
 
 async function navigateNotificationApproval(notification, section, navigationSeq) {
   const role = normalizeRoleKey(currentUserProfile?.role);
-  if ((section === 'PB_DETAIL' && role !== 'EDITOR') || (section === 'MASTER' && !['ADMIN', 'PMO'].includes(role))) {
+  const delegatedManager = section === 'PB_DETAIL' &&
+    hasDelegatedDeptManagerScope(notification.projectCode, notification.departmentCode);
+  if ((section === 'PB_DETAIL' && role !== 'EDITOR' && !delegatedManager) || (section === 'MASTER' && !['ADMIN', 'PMO'].includes(role))) {
     return { success: false, message: QLTD_NOTIFICATION_FALLBACK_MESSAGE };
   }
   if (!await selectNotificationProject(notification.projectCode)) {
@@ -4415,28 +4439,14 @@ function getWeeklyEffectiveTaskState(item, saved) {
   };
 }
 
-function qltdWeeklyCategoryName(item = {}, parent = null) {
-  const source = item || {};
-  const parentSource = parent || {};
-  return String(
-    source.hangMuc ||
-    source.projectUnitName ||
-    source.categoryName ||
-    source.projectUnit ||
-    source.category ||
-    parentSource.hangMuc ||
-    parentSource.projectUnitName ||
-    parentSource.categoryName ||
-    parentSource.projectUnit ||
-    parentSource.category ||
-    ''
-  ).trim();
+function qltdWeeklyCategoryName(item = {}) {
+  return String(item?.hangMuc || '').trim();
 }
 
-function qltdWeeklyDisplayTitle(item = {}, parent = null) {
+function qltdWeeklyDisplayTitle(item = {}) {
   const source = item || {};
-  const base = String(source.displayTitle || source.taskName || source.itemName || source.itemId || '').trim();
-  const category = qltdWeeklyCategoryName(source, parent);
+  const base = String(source.taskName || source.itemName || source.itemId || '').trim();
+  const category = qltdWeeklyCategoryName(source);
   if (!base || !category) return base;
   const normalizedBase = normalizeSearchText(base);
   const normalizedCategory = normalizeSearchText(category);
@@ -4444,28 +4454,21 @@ function qltdWeeklyDisplayTitle(item = {}, parent = null) {
   return `${base} — ${category}`;
 }
 
-function qltdWeeklyBuildMasterMetaMap(dept = {}) {
-  const map = new Map();
-  (Array.isArray(dept?.masters) ? dept.masters : []).forEach((master) => {
-    const codes = [master.masterCode, master.itemId, master.id].map(normalizeWeeklyUpdateMatchValue).filter(Boolean);
-    codes.forEach((code) => {
-      if (!map.has(code)) map.set(code, master);
-    });
-  });
-  return map;
-}
-
-function qltdWeeklyEnrichItemsForDisplay(items, dept = {}) {
-  const masterMeta = qltdWeeklyBuildMasterMetaMap(dept);
+function qltdWeeklyEnrichItemsForDisplay(items) {
   return (Array.isArray(items) ? items : []).map((item) => {
     const copy = { ...item };
-    const masterKey = normalizeWeeklyUpdateMatchValue(copy.itemType === 'MASTER' ? (copy.itemId || copy.masterTaskCode) : (copy.parentMasterTaskCode || copy.masterTaskCode));
-    const master = masterMeta.get(masterKey) || null;
-    const category = qltdWeeklyCategoryName(copy, master);
-    if (category && !String(copy.hangMuc || '').trim()) copy.hangMuc = category;
-    copy.displayTitle = qltdWeeklyDisplayTitle(copy, master);
+    copy.displayTitle = qltdWeeklyDisplayTitle(copy);
     return copy;
   });
+}
+
+function renderWeeklyZoneBadge(item = {}) {
+  const zone = String(item?.zone || '').trim();
+  return zone ? `<span class="weekly-workflow-badge is-zone">${escapeHtml(zone)}</span>` : '';
+}
+
+function qltdWeeklyIsDelegatedManager(capabilities = qltdWeeklyTaskView.capabilities) {
+  return String(capabilities?.permissionCode || '').trim().toUpperCase() === 'DEPT_MANAGER';
 }
 
 function canUpdateWeeklyItem(item, capabilities = {}) {
@@ -4549,7 +4552,7 @@ function qltdWeeklyFilterWorkItems(items, updates, context, week, filters, userE
   const statuses = Array.isArray(filters?.statuses) ? filters.statuses : [];
   const filtered = source.filter((item) => {
     const saved = findWeeklySavedUpdate(updates, item, context);
-    const haystack = normalizeSearchText([item.wbs, item.taskName, item.displayTitle, item.hangMuc, item.itemId, item.masterTaskCode, item.owner, item.coordinator].join(' '));
+    const haystack = normalizeSearchText([item.wbs, item.taskName, item.displayTitle, item.zone, item.hangMuc, item.itemId, item.masterTaskCode, item.owner, item.coordinator].join(' '));
     if (search && !haystack.includes(search)) return false;
     if (ownership === 'OWNED' && !qltdWeeklyPersonHasEmail(item.owner, userEmail)) return false;
     if (ownership === 'COORDINATED' && !qltdWeeklyPersonHasEmail(item.coordinator, userEmail)) return false;
@@ -4664,7 +4667,7 @@ function renderWeeklyObjectiveList(items, updates, context, week, capabilities) 
     const effective = getWeeklyEffectiveTaskState(item, saved);
     const key = `${item.itemType}:${item.itemId}`;
     const canUpdate = canUpdateWeeklyItem(item, capabilities);
-    return `<article class="weekly-objective-row ${key === qltdSelectedWeeklyItemKey ? 'is-selected' : ''} ${isNotificationWeeklyHighlight(key) ? 'is-notification-target' : ''}" data-notification-weekly-key="${escapeHtml(key)}"><div><span class="mono">${escapeHtml(item.wbs || item.itemId)}</span><strong>${escapeHtml(qltdWeeklyDisplayTitle(item) || item.itemId)}</strong><small>${escapeHtml(formatIsoDateVi(item.planStart) || '—')} – ${escapeHtml(formatIsoDateVi(item.planFinish) || '—')}</small></div><div><strong>${escapeHtml(effective.progress)}%</strong><span>${escapeHtml(effective.status)}</span><div class="weekly-workflow-badges">${renderWeeklyWorkflowBadges(item, saved, week)}</div></div><div>${canUpdate ? `<button type="button" class="weekly-update-button" data-weekly-select="${escapeHtml(key)}">${saved ? 'Sửa cập nhật' : 'Cập nhật'}</button>` : '<span class="weekly-readonly-action">Chỉ xem</span>'}</div></article>`;
+    return `<article class="weekly-objective-row ${key === qltdSelectedWeeklyItemKey ? 'is-selected' : ''} ${isNotificationWeeklyHighlight(key) ? 'is-notification-target' : ''}" data-notification-weekly-key="${escapeHtml(key)}"><div><span class="mono">${escapeHtml(item.wbs || item.itemId)}</span><strong>${escapeHtml(qltdWeeklyDisplayTitle(item) || item.itemId)}</strong><div class="weekly-workflow-badges">${renderWeeklyZoneBadge(item)}</div><small>${escapeHtml(formatIsoDateVi(item.planStart) || '—')} – ${escapeHtml(formatIsoDateVi(item.planFinish) || '—')}</small></div><div><strong>${escapeHtml(effective.progress)}%</strong><span>${escapeHtml(effective.status)}</span><div class="weekly-workflow-badges">${renderWeeklyWorkflowBadges(item, saved, week)}</div></div><div>${canUpdate ? `<button type="button" class="weekly-update-button" data-weekly-select="${escapeHtml(key)}">${saved ? 'Sửa cập nhật' : 'Cập nhật'}</button>` : '<span class="weekly-readonly-action">Chỉ xem</span>'}</div></article>`;
   }).join('')}</div>`;
 }
 
@@ -4690,7 +4693,7 @@ function renderWeeklyTaskRow(item, saved, options = {}) {
     isNotificationWeeklyHighlight(key) ? 'is-notification-target' : ''
   ].filter(Boolean).join(' ');
   const coordinatorDisplay = getWeeklyPersonDisplay(item.coordinator);
-  return `<article class="${rowClass}" data-notification-weekly-key="${escapeHtml(key)}"><div class="weekly-task-main"><div class="weekly-task-kicker"><span class="weekly-item-type">CÔNG VIỆC</span>${renderBudgetFlowBadge(item)}</div><strong>${escapeHtml(item.wbs ? `${item.wbs} · ${qltdWeeklyDisplayTitle(item)}` : qltdWeeklyDisplayTitle(item))}</strong><small>Mục tiêu cha: ${escapeHtml(options.parentName || '—')}</small><small>BĐ: ${escapeHtml(formatIsoDateVi(item.planStart) || '—')} · KT: ${escapeHtml(formatIsoDateVi(item.planFinish) || '—')}</small><small title="${escapeHtml(item.owner || '')}">Chủ trì: ${escapeHtml(ownerDisplay)} · Phối hợp: ${escapeHtml(coordinatorDisplay)}</small></div><div class="weekly-task-state"><span>${escapeHtml(item.officialComplete ? 100 : effective.progress)}%</span><small>${escapeHtml(statusText)}</small><div class="weekly-workflow-badges">${renderWeeklyWorkflowBadges(item, saved, options.week)}</div><em class="weekly-task-badge ${escapeHtml(getWeeklyTaskBadgeClass(item, updated, overdueDays))}">${escapeHtml(badge)}</em></div><div class="weekly-task-actions">${options.canUpdate ? `<button type="button" class="weekly-update-button" data-weekly-select="${escapeHtml(key)}">${updated ? 'Sửa cập nhật' : 'Cập nhật'}</button>` : '<span class="weekly-readonly-action">Chỉ xem</span>'}</div></article>`;
+  return `<article class="${rowClass}" data-notification-weekly-key="${escapeHtml(key)}"><div class="weekly-task-main"><div class="weekly-task-kicker"><span class="weekly-item-type">CÔNG VIỆC</span>${renderWeeklyZoneBadge(item)}${renderBudgetFlowBadge(item)}</div><strong>${escapeHtml(item.wbs ? `${item.wbs} · ${qltdWeeklyDisplayTitle(item)}` : qltdWeeklyDisplayTitle(item))}</strong><small>Mục tiêu cha: ${escapeHtml(options.parentName || '—')}</small><small>BĐ: ${escapeHtml(formatIsoDateVi(item.planStart) || '—')} · KT: ${escapeHtml(formatIsoDateVi(item.planFinish) || '—')}</small><small title="${escapeHtml(item.owner || '')}">Chủ trì: ${escapeHtml(ownerDisplay)} · Phối hợp: ${escapeHtml(coordinatorDisplay)}</small></div><div class="weekly-task-state"><span>${escapeHtml(item.officialComplete ? 100 : effective.progress)}%</span><small>${escapeHtml(statusText)}</small><div class="weekly-workflow-badges">${renderWeeklyWorkflowBadges(item, saved, options.week)}</div><em class="weekly-task-badge ${escapeHtml(getWeeklyTaskBadgeClass(item, updated, overdueDays))}">${escapeHtml(badge)}</em></div><div class="weekly-task-actions">${options.canUpdate ? `<button type="button" class="weekly-update-button" data-weekly-select="${escapeHtml(key)}">${updated ? 'Sửa cập nhật' : 'Cập nhật'}</button>` : '<span class="weekly-readonly-action">Chỉ xem</span>'}</div></article>`;
 }
 
 function renderWeeklyReadonlySelection(selected, saved, week) {
@@ -4943,7 +4946,9 @@ function renderWeeklySelectedForm(selected, saved) {
 }
 
 function renderWeeklySaveActions(selected, capabilities = {}) {
-  const submitForApproval = normalizeRoleKey(capabilities.role || currentUserProfile?.role) === 'REPORTER' && selected?.itemType === 'PB_DETAIL';
+  const submitForApproval = normalizeRoleKey(capabilities.role || currentUserProfile?.role) === 'REPORTER' &&
+    !qltdWeeklyIsDelegatedManager(capabilities) &&
+    selected?.itemType === 'PB_DETAIL';
   return `<div class="weekly-update-actions"><button type="button" class="secondary-button" data-weekly-close-form>Hủy thay đổi</button><div><button id="saveWeeklyTaskUpdateButton" type="button" class="weekly-update-button" data-default-label="${submitForApproval ? 'Gửi duyệt' : 'Lưu báo cáo tuần'}">${submitForApproval ? 'Gửi duyệt' : 'Lưu báo cáo tuần'}</button><span id="weeklyTaskSaveStatus" class="weekly-update-note"></span></div></div>`;
 }
 
@@ -5044,22 +5049,22 @@ function bindWeeklyTaskUpdateControls() {
 }
 
 const QLTD_WEEKLY_EXPORT_HEADERS = [
-  'STT', 'WBS', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp',
+  'STT', 'WBS', 'Zone', 'Hạng mục', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp',
   'Bắt đầu KH', 'Kết thúc KH', 'Kết quả thực hiện trong tuần',
   'Tiến độ cuối tuần', 'Trạng thái công việc', 'Vướng mắc/Rủi ro', 'Giải pháp/Đề xuất'
 ];
 const QLTD_WEEKLY_EXPORT_KEYS = [
-  'sequence', 'wbs', 'content', 'owner', 'coordinator', 'planStart',
+  'sequence', 'wbs', 'zone', 'hangMuc', 'content', 'owner', 'coordinator', 'planStart',
   'planFinish', 'weekResult', 'progress', 'status', 'issue', 'recommendation'
 ];
 
 const QLTD_WEEKLY_NEXT_EXPORT_HEADERS = [
-  'STT', 'WBS', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp',
+  'STT', 'WBS', 'Zone', 'Hạng mục', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp',
   'Bắt đầu KH', 'Kết thúc KH', 'Tiến độ hiện tại', 'Trạng thái hiện tại',
   'Nhóm kế hoạch tuần sau', 'Vướng mắc/Rủi ro hiện tại', 'Giải pháp/Đề xuất'
 ];
 const QLTD_WEEKLY_NEXT_EXPORT_KEYS = [
-  'sequence', 'wbs', 'content', 'owner', 'coordinator', 'planStart',
+  'sequence', 'wbs', 'zone', 'hangMuc', 'content', 'owner', 'coordinator', 'planStart',
   'planFinish', 'progress', 'status', 'planGroup', 'issue', 'recommendation'
 ];
 
@@ -5109,9 +5114,7 @@ function qltdWeeklyEnrichExportItemsWithParentMasters(items, masters) {
       progress: Number.isFinite(Number(master.progress)) ? Number(master.progress) : 0,
       status: master.status || '',
       owner: master.owner || '',
-      coordinator: master.coordinator || '',
-      hangMuc: master.hangMuc || '',
-      displayTitle: qltdWeeklyDisplayTitle(master)
+      coordinator: master.coordinator || ''
     };
     if (master.officialComplete !== undefined) exportItem.officialComplete = !!master.officialComplete;
     additions.push(exportItem);
@@ -5274,6 +5277,8 @@ function qltdWeeklyBuildExportModel(items, updates, context, week, reportType = 
     const cells = {
       sequence: index + 1,
       wbs: text(item.wbs),
+      zone: text(item.zone),
+      hangMuc: text(item.hangMuc),
       content: text(qltdWeeklyDisplayTitle(item, entry.parent) || item.taskName),
       owner: person(item.owner),
       coordinator: person(item.coordinator),
@@ -5341,19 +5346,19 @@ function qltdWeeklyStyleReportSheet(sheet, metadata, reportRows, options = {}) {
       row.font = { bold: true, color: { argb: 'FF17365D' } };
       row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF2F8' } };
     } else {
-      row.getCell(3).alignment = { vertical: 'top', wrapText: true, indent: 1 };
+      row.getCell(5).alignment = { vertical: 'top', wrapText: true, indent: 1 };
     }
-    if (entry.orphan) row.getCell(3).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
-    if (entry.overdue) row.getCell(10).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+    if (entry.orphan) row.getCell(5).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+    if (entry.overdue) row.getCell(options.statusColumn || 12).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
   });
   const dataStartRow = headerRow.number + 1;
   const dataEndRow = sheet.rowCount;
   if (dataEndRow >= dataStartRow) {
     for (let rowNumber = dataStartRow; rowNumber <= dataEndRow; rowNumber += 1) {
       sheet.getCell(rowNumber, 2).numFmt = '@';
-      sheet.getCell(rowNumber, 6).numFmt = 'dd/mm/yyyy';
-      sheet.getCell(rowNumber, 7).numFmt = 'dd/mm/yyyy';
-      sheet.getCell(rowNumber, options.progressColumn || 9).numFmt = '0"%"';
+      sheet.getCell(rowNumber, 8).numFmt = 'dd/mm/yyyy';
+      sheet.getCell(rowNumber, 9).numFmt = 'dd/mm/yyyy';
+      sheet.getCell(rowNumber, options.progressColumn || 11).numFmt = '0"%"';
     }
   }
   sheet.views = [{ state: 'frozen', ySplit: headerRow.number, showGridLines: false }];
@@ -5361,7 +5366,7 @@ function qltdWeeklyStyleReportSheet(sheet, metadata, reportRows, options = {}) {
     from: { row: headerRow.number, column: 1 },
     to: { row: headerRow.number, column: columnCount }
   };
-  (options.widths || [7, 14, 44, 22, 22, 16, 16, 38, 18, 22, 32, 32])
+  (options.widths || [7, 14, 16, 18, 44, 22, 22, 16, 16, 38, 18, 22, 32, 32])
     .forEach((width, index) => { sheet.getColumn(index + 1).width = width; });
   sheet.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 }
@@ -5442,13 +5447,15 @@ async function exportWeeklyReportExcel() {
     qltdWeeklyStyleReportSheet(currentSheet, qltdWeeklyBuildExportMetadata(payload, dept, week, exportedAt), currentReport.rows, {
       headers: QLTD_WEEKLY_EXPORT_HEADERS,
       title: 'BÁO CÁO KẾT QUẢ TUẦN NÀY',
-      progressColumn: 9
+      progressColumn: 11,
+      statusColumn: 12
     });
     const nextSheet = workbook.addWorksheet('Kế hoạch tuần sau');
     qltdWeeklyStyleReportSheet(nextSheet, qltdWeeklyBuildExportMetadata(payload, dept, nextWeek, exportedAt), nextReport.rows, {
       headers: QLTD_WEEKLY_NEXT_EXPORT_HEADERS,
       title: 'KẾ HOẠCH TUẦN SAU',
-      progressColumn: 8
+      progressColumn: 10,
+      statusColumn: 11
     });
 
     const buffer = await workbook.xlsx.writeBuffer();
@@ -5870,7 +5877,9 @@ async function saveWeeklyTaskUpdate() {
     ? { updates: [] }
     : buildWeeklyBudgetUpdates(projectCode, deptCode, qltdSelectedWeekId, item);
   if (budgetPayload.error) { if (status) status.textContent = budgetPayload.error; return; }
-  const reporterProposal = normalizeRoleKey(qltdWeeklyTaskView.capabilities?.role || currentUserProfile?.role) === 'REPORTER' && item.itemType === 'PB_DETAIL';
+  const reporterProposal = normalizeRoleKey(qltdWeeklyTaskView.capabilities?.role || currentUserProfile?.role) === 'REPORTER' &&
+    !qltdWeeklyIsDelegatedManager(qltdWeeklyTaskView.capabilities) &&
+    item.itemType === 'PB_DETAIL';
   if (reporterProposal) budgetPayload.updates = [];
   const currentUpdate = findWeeklySavedUpdate(qltdWeeklyTaskView.updates, item, { projectCode, deptCode, weekCode: qltdSelectedWeekId });
   const currentEffectiveState = getWeeklyEffectiveTaskState(item, currentUpdate);

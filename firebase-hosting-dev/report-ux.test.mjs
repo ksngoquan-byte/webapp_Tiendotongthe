@@ -105,11 +105,18 @@ assert.equal(masterToggleContext.renderCount, 2);
 
 const approvalRoleContext = { normalizeRoleKey: (value) => String(value || '').trim().toUpperCase() };
 vm.createContext(approvalRoleContext);
-vm.runInContext(extractFunction(app, 'canApprove'), approvalRoleContext);
+vm.runInContext([
+  extractFunction(app, 'getDelegatedDeptManagerScopes'),
+  extractFunction(app, 'canApprove')
+].join('\n'), approvalRoleContext);
 assert.equal(approvalRoleContext.canApprove({ role: 'ADMIN' }), true);
 assert.equal(approvalRoleContext.canApprove({ role: 'PMO' }), true);
 assert.equal(approvalRoleContext.canApprove({ role: 'EDITOR' }), true);
 for (const role of ['REPORTER', 'VIEWER']) assert.equal(approvalRoleContext.canApprove({ role }), false);
+assert.equal(approvalRoleContext.canApprove({
+  role: 'REPORTER',
+  delegatedScopes: [{ projectCode: '37-5.HL', deptCode: 'KINHDOANH', permissionCode: 'DEPT_MANAGER' }]
+}), true);
 assert.match(app, /admin:\s*'Phê duyệt'/);
 
 const permissionsBinding = latestFunction('applyPermissions', 'getStoredProjectCode');
@@ -509,6 +516,7 @@ vm.runInContext([
   extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
   extractFunction(app, 'qltdWeeklyCategoryName'),
   extractFunction(app, 'qltdWeeklyDisplayTitle'),
+  extractFunction(app, 'renderWeeklyZoneBadge'),
   extractFunction(app, 'canUpdateWeeklyItem'),
   extractFunction(app, 'renderWeeklyObjectiveList')
 ].join('\n'), objectiveRenderContext);
@@ -519,6 +527,9 @@ const editableObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ it
 assert.match(editableObjective, /data-weekly-select="MASTER:M1"/);
 const categoryObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ itemType: 'MASTER', itemId: 'M2', taskName: 'Duplicate name', hangMuc: 'LK02', progress: 20 }], [], {}, {}, true);
 assert.match(categoryObjective, /Duplicate name — LK02/);
+assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc', hangMuc: '' }), 'Tên công việc');
+assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc — LK02', hangMuc: 'LK02' }), 'Tên công việc — LK02');
+assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc', hangMuc: '', parentMasterTaskCode: 'M-PARENT' }, { hangMuc: 'PARENT' }), 'Tên công việc');
 
 const savedUpdatesSource = app.slice(app.indexOf('function renderWeeklySavedUpdates'), app.indexOf('function renderWeeklyNextItems'));
 const savedUpdatesContext = {
@@ -569,7 +580,6 @@ vm.createContext(weeklyExportContext);
 vm.runInContext([
   extractFunction(app, 'qltdWeeklyCategoryName'),
   extractFunction(app, 'qltdWeeklyDisplayTitle'),
-  extractFunction(app, 'qltdWeeklyBuildMasterMetaMap'),
   extractFunction(app, 'qltdWeeklyEnrichItemsForDisplay'),
   weeklyExportSource,
   'this.enrichItems = qltdWeeklyEnrichExportItemsWithParentMasters; this.buildExportModel = qltdWeeklyBuildExportModel; this.styleReport = qltdWeeklyStyleReportSheet; this.naturalWbsCompare = qltdWeeklyNaturalWbsCompare; this.planGroupLabel = qltdWeeklyNextPlanGroupLabel; this.exportDateValue = qltdWeeklyExportDateValue; this.exportHeaders = QLTD_WEEKLY_EXPORT_HEADERS; this.nextExportHeaders = QLTD_WEEKLY_NEXT_EXPORT_HEADERS;'
@@ -603,9 +613,20 @@ const originalItems = JSON.stringify(exportItems);
 const originalUpdates = JSON.stringify(exportUpdates);
 const originalMasters = JSON.stringify(deptMasters);
 const categoryExportItems = weeklyExportContext.enrichItems([
-  { itemType: 'PB_DETAIL', itemId: 'D-CAT', parentMasterTaskCode: 'M-CAT', taskName: 'Detail' }
+  { itemType: 'PB_DETAIL', itemId: 'D-CAT', parentMasterTaskCode: 'M-CAT', taskName: 'Detail', zone: 'Zone 1', hangMuc: 'LK02' }
 ], [{ masterCode: 'M-CAT', taskName: 'Duplicate objective', hangMuc: 'LK02' }]);
-assert.equal(categoryExportItems.find((item) => item.itemId === 'M-CAT').displayTitle, 'Duplicate objective — LK02');
+assert.equal(categoryExportItems.find((item) => item.itemId === 'M-CAT').taskName, 'Duplicate objective');
+assert.equal(categoryExportItems.find((item) => item.itemId === 'M-CAT').hangMuc, undefined);
+assert.equal(categoryExportItems.find((item) => item.itemId === 'D-CAT').displayTitle, 'Detail — LK02');
+const categoryExportRow = weeklyExportContext.buildExportModel(
+  categoryExportItems,
+  [],
+  exportContext,
+  exportWeek
+).rows.find((row) => row.item.itemId === 'D-CAT');
+assert.equal(categoryExportRow.values[2], 'Zone 1');
+assert.equal(categoryExportRow.values[3], 'LK02');
+assert.equal(categoryExportRow.values[4], 'Detail — LK02');
 const enrichedItems = weeklyExportContext.enrichItems(exportItems, deptMasters);
 assert.equal(enrichedItems.filter((item) => item.itemType === 'MASTER' && item.itemId === 'M2').length, 1);
 assert.equal(enrichedItems.find((item) => item.itemId === 'M2').wbs, 'V.2');
@@ -615,16 +636,16 @@ const exportModel = weeklyExportContext.buildExportModel(enrichedItems, exportUp
 assert.deepEqual(Array.from(exportModel.rows, (row) => row.item.itemId), ['M2', 'D2A', 'D2C', 'D2B', 'M3', 'M10', 'D10', 'ORPHAN']);
 assert.equal(exportModel.rows.find((row) => row.item.itemId === 'D2A').orphan, false);
 assert.equal(exportModel.rows.find((row) => row.item.itemId === 'D2C').orphan, false);
-assert.equal(exportModel.rows[0].values[2], 'Mục tiêu 2');
-assert.equal(exportModel.rows[1].values[7], 'Bản cuối khi bằng giờ');
-assert.equal(exportModel.rows[1].values[8], 50);
-assert.equal(exportModel.rows[1].values[10], 'Vướng mới');
-assert.equal(exportModel.rows[1].values[11], 'Giải pháp mới');
-assert.equal(exportModel.rows.filter((row) => row.values[2] === 'Việc cùng tên').length, 2);
+assert.equal(exportModel.rows[0].values[4], 'Mục tiêu 2');
+assert.equal(exportModel.rows[1].values[9], 'Bản cuối khi bằng giờ');
+assert.equal(exportModel.rows[1].values[10], 50);
+assert.equal(exportModel.rows[1].values[12], 'Vướng mới');
+assert.equal(exportModel.rows[1].values[13], 'Giải pháp mới');
+assert.equal(exportModel.rows.filter((row) => row.values[4] === 'Việc cùng tên').length, 2);
 assert.equal(exportModel.rows.at(-1).orphan, true);
 assert.equal(exportModel.warnings.length, 1);
-assert.equal(Object.prototype.toString.call(exportModel.rows[1].values[5]), '[object Date]');
-assert.equal(exportModel.rows[1].values[5].toISOString().slice(0, 10), '2026-06-23');
+assert.equal(Object.prototype.toString.call(exportModel.rows[1].values[7]), '[object Date]');
+assert.equal(exportModel.rows[1].values[7].toISOString().slice(0, 10), '2026-06-23');
 const dateCases = [
   ['06/07/2026', '2026-07-06'],
   ['07/06/2026', '2026-06-07'],
@@ -644,19 +665,19 @@ assert.equal(weeklyExportContext.exportDateValue('06/31/2026'), '');
 assert.equal(JSON.stringify(exportItems), originalItems);
 assert.equal(JSON.stringify(exportUpdates), originalUpdates);
 assert.equal(JSON.stringify(deptMasters), originalMasters);
-assert.deepEqual(Array.from(weeklyExportContext.exportHeaders), ['STT', 'WBS', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp', 'Bắt đầu KH', 'Kết thúc KH', 'Kết quả thực hiện trong tuần', 'Tiến độ cuối tuần', 'Trạng thái công việc', 'Vướng mắc/Rủi ro', 'Giải pháp/Đề xuất']);
-assert.deepEqual(Array.from(weeklyExportContext.nextExportHeaders), ['STT', 'WBS', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp', 'Bắt đầu KH', 'Kết thúc KH', 'Tiến độ hiện tại', 'Trạng thái hiện tại', 'Nhóm kế hoạch tuần sau', 'Vướng mắc/Rủi ro hiện tại', 'Giải pháp/Đề xuất']);
-assert.equal(weeklyExportContext.exportHeaders.length, 12);
-assert.equal(weeklyExportContext.nextExportHeaders.length, 12);
+assert.deepEqual(Array.from(weeklyExportContext.exportHeaders), ['STT', 'WBS', 'Zone', 'Hạng mục', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp', 'Bắt đầu KH', 'Kết thúc KH', 'Kết quả thực hiện trong tuần', 'Tiến độ cuối tuần', 'Trạng thái công việc', 'Vướng mắc/Rủi ro', 'Giải pháp/Đề xuất']);
+assert.deepEqual(Array.from(weeklyExportContext.nextExportHeaders), ['STT', 'WBS', 'Zone', 'Hạng mục', 'Nội dung mục tiêu/công việc', 'Chủ trì', 'Phối hợp', 'Bắt đầu KH', 'Kết thúc KH', 'Tiến độ hiện tại', 'Trạng thái hiện tại', 'Nhóm kế hoạch tuần sau', 'Vướng mắc/Rủi ro hiện tại', 'Giải pháp/Đề xuất']);
+assert.equal(weeklyExportContext.exportHeaders.length, 14);
+assert.equal(weeklyExportContext.nextExportHeaders.length, 14);
 const forbiddenExportHeaders = /Cấp|Mục tiêu cha|Kiểm soát báo cáo|Cập nhật cuối|itemId|itemType|masterTaskCode|parentMasterTaskCode|eligibleReason|requestId/i;
 assert.doesNotMatch(weeklyExportContext.exportHeaders.concat(weeklyExportContext.nextExportHeaders).join('|'), forbiddenExportHeaders);
 assert.doesNotMatch(exportModel.rows.flatMap((row) => row.values).join('|'), /MASTER|PB_DETAIL/);
 const blankBusinessRow = exportModel.rows.find((row) => row.item.itemId === 'D2C');
-assert.equal(blankBusinessRow.values[3], '');
-assert.equal(blankBusinessRow.values[4], '');
-assert.equal(blankBusinessRow.values[7], '');
-assert.equal(blankBusinessRow.values[10], '');
-assert.equal(blankBusinessRow.values[11], '');
+assert.equal(blankBusinessRow.values[5], '');
+assert.equal(blankBusinessRow.values[6], '');
+assert.equal(blankBusinessRow.values[9], '');
+assert.equal(blankBusinessRow.values[12], '');
+assert.equal(blankBusinessRow.values[13], '');
 assert.doesNotMatch(blankBusinessRow.values.join('|'), /34|sourceIndex|metadata/i);
 
 const nextWeekItems = weeklyExportContext.enrichItems([
@@ -665,10 +686,10 @@ const nextWeekItems = weeklyExportContext.enrichItems([
 ], deptMasters);
 const nextExportModel = weeklyExportContext.buildExportModel(nextWeekItems, exportUpdates, exportContext, { weekStart: '2026-06-29', weekEnd: '2026-07-05' }, 'NEXT');
 assert.deepEqual(Array.from(nextExportModel.rows, (row) => row.item.itemId), ['M2', 'D2A', 'NEXT-ORPHAN']);
-assert.equal(nextExportModel.rows[1].values[7], 25);
-assert.equal(nextExportModel.rows[1].values[9], 'Bắt đầu/Thực hiện trong tuần sau');
-assert.equal(nextExportModel.rows[1].values[10], 'Vướng mới');
-assert.equal(nextExportModel.rows[1].values[11], 'Giải pháp mới');
+assert.equal(nextExportModel.rows[1].values[9], 25);
+assert.equal(nextExportModel.rows[1].values[11], 'Bắt đầu/Thực hiện trong tuần sau');
+assert.equal(nextExportModel.rows[1].values[12], 'Vướng mới');
+assert.equal(nextExportModel.rows[1].values[13], 'Giải pháp mới');
 assert.equal(nextExportModel.rows.at(-1).orphan, true);
 assert.equal(weeklyExportContext.planGroupLabel('OVERDUE'), 'Quá hạn chuyển tiếp');
 assert.equal(weeklyExportContext.planGroupLabel('IN_PROGRESS'), 'Tiếp tục thực hiện');
@@ -677,12 +698,12 @@ assert.equal(weeklyExportContext.planGroupLabel('INTERNAL_CODE'), 'Kế hoạch 
 
 class MockCell { constructor(value = '') { this.value = value; } }
 class MockRow {
-  constructor(number, values) { this.number = number; this.values = values; this.cells = Array.from({ length: 12 }, (_, index) => new MockCell(values[index] ?? '')); }
+  constructor(number, values) { this.number = number; this.values = values; this.cells = Array.from({ length: 14 }, (_, index) => new MockCell(values[index] ?? '')); }
   getCell(index) { return this.cells[index - 1]; }
   eachCell(_options, callback) { this.cells.forEach(callback); }
 }
 class MockSheet {
-  constructor() { this.rows = []; this.columns = Array.from({ length: 12 }, () => ({})); }
+  constructor() { this.rows = []; this.columns = Array.from({ length: 14 }, () => ({})); }
   addRow(values) { const row = new MockRow(this.rows.length + 1, values); this.rows.push(row); return row; }
   mergeCells() {}
   get rowCount() { return this.rows.length; }
@@ -701,21 +722,21 @@ const mockSheet = new MockSheet();
 weeklyExportContext.styleReport(mockSheet, exportMetadata, exportModel.rows);
 assert.equal(mockSheet.views[0].ySplit, 9);
 assert.deepEqual({ ...mockSheet.autoFilter.from }, { row: 9, column: 1 });
-assert.deepEqual({ ...mockSheet.autoFilter.to }, { row: 9, column: 12 });
+assert.deepEqual({ ...mockSheet.autoFilter.to }, { row: 9, column: 14 });
 assert.equal(mockSheet.getCell(6, 2).numFmt, 'dd/mm/yyyy hh:mm');
 assert.notEqual(mockSheet.getCell(6, 2).numFmt, '0"%"');
 assert.equal(mockSheet.getCell(10, 2).numFmt, '@');
-assert.equal(mockSheet.getCell(10, 6).numFmt, 'dd/mm/yyyy');
-assert.equal(mockSheet.getCell(10, 7).numFmt, 'dd/mm/yyyy');
-assert.equal(mockSheet.getCell(10, 9).numFmt, '0"%"');
-assert.equal(mockSheet.getCell(9, 9).numFmt, undefined);
-assert.equal(mockSheet.rows[10].getCell(3).alignment.indent, 1);
+assert.equal(mockSheet.getCell(10, 8).numFmt, 'dd/mm/yyyy');
+assert.equal(mockSheet.getCell(10, 9).numFmt, 'dd/mm/yyyy');
+assert.equal(mockSheet.getCell(10, 11).numFmt, '0"%"');
+assert.equal(mockSheet.getCell(9, 11).numFmt, undefined);
+assert.equal(mockSheet.rows[10].getCell(5).alignment.indent, 1);
 const mockNextSheet = new MockSheet();
-weeklyExportContext.styleReport(mockNextSheet, exportMetadata, nextExportModel.rows, { headers: weeklyExportContext.nextExportHeaders, progressColumn: 8 });
+weeklyExportContext.styleReport(mockNextSheet, exportMetadata, nextExportModel.rows, { headers: weeklyExportContext.nextExportHeaders, progressColumn: 10, statusColumn: 11 });
 assert.equal(mockNextSheet.getCell(6, 2).numFmt, 'dd/mm/yyyy hh:mm');
-assert.equal(mockNextSheet.getCell(10, 8).numFmt, '0"%"');
-assert.equal(mockNextSheet.getCell(9, 8).numFmt, undefined);
-const expectedExportWidths = [7, 14, 44, 22, 22, 16, 16, 38, 18, 22, 32, 32];
+assert.equal(mockNextSheet.getCell(10, 10).numFmt, '0"%"');
+assert.equal(mockNextSheet.getCell(9, 10).numFmt, undefined);
+const expectedExportWidths = [7, 14, 16, 18, 44, 22, 22, 16, 16, 38, 18, 22, 32, 32];
 assert.deepEqual(mockSheet.columns.map((column) => column.width), expectedExportWidths);
 assert.deepEqual(mockNextSheet.columns.map((column) => column.width), expectedExportWidths);
 
@@ -913,7 +934,6 @@ vm.runInContext([
   extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
   extractFunction(app, 'qltdWeeklyCategoryName'),
   extractFunction(app, 'qltdWeeklyDisplayTitle'),
-  extractFunction(app, 'qltdWeeklyBuildMasterMetaMap'),
   extractFunction(app, 'qltdWeeklyEnrichItemsForDisplay'),
   `async ${loader}`
 ].join('\n'), weeklyLoaderContext);
@@ -1033,7 +1053,7 @@ assert.match(extractFunction(app, 'resetDeptScopedSelectionState'), /qltdWeeklyE
 assert.match(extractFunction(app, 'clearWeeklyTaskSessionState'), /qltdWeeklyEditingItemKey = ''/);
 assert.match(extractFunction(app, 'qltdShiftSelectedWeek'), /qltdWeeklyEditingItemKey = ''/);
 
-function createWeeklySaveContext({ postResult, postError = null, verified = null, delayed = false, role = 'EDITOR', budgetUpdates = [] } = {}) {
+function createWeeklySaveContext({ postResult, postError = null, verified = null, delayed = false, role = 'EDITOR', permissionCode = '', budgetUpdates = [] } = {}) {
   const button = { disabled: false, dataset: role === 'REPORTER' ? { defaultLabel: 'Gửi duyệt' } : {}, textContent: role === 'REPORTER' ? 'Gửi duyệt' : 'Lưu báo cáo tuần' };
   const status = { textContent: '' };
   const inputs = {
@@ -1047,7 +1067,7 @@ function createWeeklySaveContext({ postResult, postError = null, verified = null
   };
   let releasePost;
   const context = {
-    qltdWeeklyTaskView: { items: [{ itemType: 'PB_DETAIL', itemId: 'DT-1', progress: 20 }], updates: [], capabilities: { role } },
+    qltdWeeklyTaskView: { items: [{ itemType: 'PB_DETAIL', itemId: 'DT-1', progress: 20 }], updates: [], capabilities: { role, permissionCode } },
     qltdSelectedWeeklyItemKey: 'PB_DETAIL:DT-1',
     qltdWeeklyEditingItemKey: 'PB_DETAIL:DT-1',
     qltdDeptPlanPayload: { projectCode: 'P1', departments: [{ deptCode: 'D1' }] },
@@ -1059,6 +1079,7 @@ function createWeeklySaveContext({ postResult, postError = null, verified = null
     qltdWeeklyWorkspaceTab: 'tasks',
     currentUserProfile: { email: 'user@example.com', role },
     normalizeRoleKey: (value) => String(value || '').trim().toUpperCase(),
+    qltdWeeklyIsDelegatedManager: (capabilities) => String(capabilities?.permissionCode || '').toUpperCase() === 'DEPT_MANAGER',
     qltdGanttDirtyProjects: new Set(),
     document: { getElementById: (id) => inputs[id] || null },
     window: { confirm: () => true },
@@ -1136,6 +1157,15 @@ assert.equal(reporterSave.context.ganttMarkCount, 0);
 assert.equal(reporterSave.context.postedBodies[0].budgetUpdates.length, 0);
 assert.equal(reporterSave.context.postedBodies[0].expectedApprovalStatus, 'PENDING');
 assert.match(reporterSave.context.toastMessages[0], /Trưởng\/Phó phòng duyệt/);
+
+const delegatedManagerSave = createWeeklySaveContext({
+  role: 'REPORTER',
+  permissionCode: 'DEPT_MANAGER',
+  budgetUpdates: [{ budgetItemCode: 'MANAGER-BUDGET' }]
+});
+await delegatedManagerSave.context.saveWeeklyTaskUpdate();
+assert.equal(delegatedManagerSave.context.postedBodies[0].budgetUpdates.length, 1);
+assert.equal(delegatedManagerSave.context.postedBodies[0].expectedApprovalStatus, '');
 
 const backendFailure = createWeeklySaveContext({ postResult: { success: false, message: 'Backend từ chối' } });
 await backendFailure.context.saveWeeklyTaskUpdate();

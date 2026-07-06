@@ -2314,6 +2314,7 @@ body.has-detail-status-popup { overflow: hidden; }
 .weekly-workflow-badge.is-due,
 .weekly-workflow-badge.is-pending { background: #dbeafe; color: #1d4ed8; }
 .weekly-workflow-badge.is-approved { background: #dcfce7; color: #15803d; }
+.weekly-workflow-badge.is-zone { background: #e2e8f0; color: #334155; }
 .weekly-readonly-action { display: inline-flex; border-radius: 999px; background: #f1f5f9; color: #64748b; padding: 7px 10px; font-size: 12px; font-weight: 700; }
 
 .weekly-loading-state,
