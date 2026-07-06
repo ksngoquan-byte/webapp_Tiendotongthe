@@ -59,6 +59,7 @@ function qltdPbDetailGetContext() {
   const masterTaskCode = meta.masterTaskCode || document.getElementById('weeklyMasterSelector')?.value || '';
   const email = document.getElementById('userEmail')?.textContent?.trim() || '';
   const role = document.getElementById('userRole')?.textContent?.trim() || '';
+  const delegatedProgress = meta.permissionSource === 'DELEGATED_ACCESS' && meta.permissionCode === 'UPDATE_PROGRESS';
 
   return {
     projectCode,
@@ -68,7 +69,11 @@ function qltdPbDetailGetContext() {
     masterTaskName: meta.masterTaskName || '',
     email,
     role,
-    canWrite: qltdPbDetailCanWrite(role),
+    permissionSource: meta.permissionSource || '',
+    permissionCode: meta.permissionCode || '',
+    delegatedProgress,
+    canWrite: delegatedProgress || qltdPbDetailCanWrite(role),
+    canCreate: !delegatedProgress && qltdPbDetailCanWrite(role),
     key: [projectCode, deptCode, masterTaskCode, email].join('::')
   };
 }
@@ -479,7 +484,7 @@ function qltdPbDetailRender() {
       </div>
       <div class="pb-detail-actions">
         <button type="button" class="pb-detail-button" data-pb-detail-action="reload" ${qltdPbDetailState.loading ? 'disabled' : ''}>Tải lại</button>
-        ${context.canWrite ? `<button type="button" class="pb-detail-button primary" data-pb-detail-action="add" ${qltdPbDetailState.loading ? 'disabled' : ''}>+ Thêm việc chi tiết</button>` : ''}
+        ${context.canCreate ? `<button type="button" class="pb-detail-button primary" data-pb-detail-action="add" ${qltdPbDetailState.loading ? 'disabled' : ''}>+ Thêm việc chi tiết</button>` : ''}
       </div>
     </div>
     ${messageHtml}
@@ -522,6 +527,23 @@ function qltdPbDetailRenderForm(context) {
     ? qltdPbDetailState.detailTasks.find((item) => item.detailTaskId === qltdPbDetailState.editingId) || {}
     : {};
   const formValue = qltdPbDetailState.formDraft || task;
+  if (context.delegatedProgress) {
+    return `
+      <form id="pbDetailForm" class="pb-detail-form" novalidate>
+        <div class="pb-detail-form-header">
+          <h4>Cập nhật tiến độ ${qltdPbDetailEscapeHtml(task.wbs || task.detailTaskId || '')}</h4>
+          <span class="pb-detail-subtitle">Ủy quyền UPDATE_PROGRESS · không thay đổi kế hoạch, cấu trúc hoặc ngân sách</span>
+        </div>
+        <div class="pb-detail-form-grid">
+          <div class="pb-detail-field span-2"><label for="pbDetailStatus">Trạng thái</label><select id="pbDetailStatus" name="status">${['Chưa bắt đầu', 'Đang làm', 'Tạm dừng', 'Hoàn thành'].map((value) => `<option value="${value}" ${String(formValue.status || '') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></div>
+          <div class="pb-detail-field span-2"><label for="pbDetailProgress">% hoàn thành</label><input id="pbDetailProgress" name="progress" type="number" min="0" max="100" step="1" value="${qltdPbDetailEscapeHtml(formValue.progress ?? 0)}"></div>
+          <div class="pb-detail-field span-2"><label for="pbDetailActualStart">Bắt đầu thực tế</label><input id="pbDetailActualStart" name="actualStart" type="date" value="${qltdPbDetailEscapeHtml(formValue.actualStart || '')}"></div>
+          <div class="pb-detail-field span-2"><label for="pbDetailActualFinish">Hoàn thành thực tế</label><input id="pbDetailActualFinish" name="actualFinish" type="date" value="${qltdPbDetailEscapeHtml(formValue.actualFinish || '')}"></div>
+          <div class="pb-detail-field span-4"><label for="pbDetailNote">Ghi chú cập nhật</label><textarea id="pbDetailNote" name="note">${qltdPbDetailEscapeHtml(formValue.note || '')}</textarea></div>
+        </div>
+        <div class="pb-detail-form-actions"><button type="button" class="pb-detail-button" data-pb-detail-action="cancel">Hủy</button><button type="button" class="pb-detail-button primary" data-pb-detail-action="save">Lưu tiến độ</button></div>
+      </form>`;
+  }
   const hasBudgetPlan = formValue.hasBudgetPlan !== undefined
     ? !!formValue.hasBudgetPlan
     : formValue.budgetPlan !== '' && formValue.budgetPlan !== null && formValue.budgetPlan !== undefined;
@@ -792,6 +814,20 @@ function qltdPbDetailReadFormPayload(context, isEdit) {
   if (!form) throw new Error('Không tìm thấy biểu mẫu việc chi tiết.');
 
   const data = new FormData(form);
+  if (context.delegatedProgress) {
+    const progress = Number(data.get('progress'));
+    if (!Number.isFinite(progress) || progress < 0 || progress > 100) throw new Error('% hoàn thành phải từ 0 đến 100.');
+    return {
+      email: context.email,
+      projectCode: context.projectCode,
+      deptCode: context.deptCode,
+      status: String(data.get('status') || '').trim(),
+      progress,
+      actualStart: String(data.get('actualStart') || '').trim(),
+      actualFinish: String(data.get('actualFinish') || '').trim(),
+      note: String(data.get('note') || '').trim()
+    };
+  }
   const payload = {
     email: context.email,
     projectCode: context.projectCode,
@@ -940,8 +976,9 @@ function qltdPbDetailHandleClick(event) {
     qltdPbDetailState.message = '';
     qltdPbDetailState.formDraft = null;
     qltdPbDetailRender();
-    qltdPbDetailLoadAssignees(qltdPbDetailGetContext());
-    document.getElementById('pbDetailTaskName')?.focus();
+    const context = qltdPbDetailGetContext();
+    if (!context.delegatedProgress) qltdPbDetailLoadAssignees(context);
+    (document.getElementById('pbDetailProgress') || document.getElementById('pbDetailTaskName'))?.focus();
     return;
   }
 
@@ -972,7 +1009,10 @@ function qltdPbDetailHandleDeptPlanRendered(event) {
     deptCode: detail.deptCode || '',
     masterTaskCode: detail.masterTaskCode || '',
     masterWbs: detail.masterWbs || detail.masterTaskCode || '',
-    masterTaskName: detail.masterTaskName || ''
+    masterTaskName: detail.masterTaskName || '',
+    permissionSource: detail.permissionSource || '',
+    permissionCode: detail.permissionCode || '',
+    canUpdateProgress: !!detail.canUpdateProgress
   };
 
   const context = qltdPbDetailGetContext();

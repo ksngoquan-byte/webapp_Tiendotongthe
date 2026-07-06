@@ -68,6 +68,7 @@ let qltdSelectedMonthCode = getDefaultMonthCode();
 let qltdSelectedMasterCode = '';
 let qltdSelectedWeekId = '';
 let qltdGanttPayload = null;
+let qltdDashboardPayload = null;
 let qltdGanttZoom = 'month';
 let qltdGanttShowLinks = true;
 let qltdGanttShowDates = true;
@@ -78,6 +79,7 @@ const qltdGanttBudgetLoadingProjects = new Set();
 const qltdGanttDataRequests = new Map();
 let qltdGanttRequestTail = Promise.resolve();
 let qltdGanttLoadRequestSeq = 0;
+let qltdDashboardLoadRequestSeq = 0;
 const QLTD_GANTT_REQUEST_TIMEOUT_MS = 40000;
 const QLTD_GANTT_BUSY_RETRY_DELAY_MS = 1500;
 const QLTD_GANTT_BUSY_MAX_DELAY_MS = 6000;
@@ -717,6 +719,7 @@ function renderProjectOptions(projects = []) {
     selector.appendChild(option);
     selector.disabled = true;
     qltdGanttPayload = null;
+    qltdDashboardPayload = null;
     if (status) {
       status.textContent = 'Ch\u01b0a c\u00f3 d\u1ef1 \u00e1n';
       status.classList.remove('hidden');
@@ -737,9 +740,8 @@ function renderProjectOptions(projects = []) {
   const hasStoredProject = projects.some((project) => project.projectCode === storedProjectCode);
   selector.value = hasStoredProject ? storedProjectCode : projects[0].projectCode;
   setStoredProjectCode(selector.value);
-  if (qltdActiveView === 'dashboard' || qltdActiveView === 'gantt') {
-    loadGanttDataForSelectedProject(selector.value);
-  }
+  if (qltdActiveView === 'dashboard') loadDashboardDataForSelectedProject(selector.value);
+  if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
 
   if (status) {
     status.textContent = '';
@@ -752,9 +754,8 @@ function renderProjectOptions(projects = []) {
     if (qltdActiveView === 'report') loadDeptPlansForSelectedProject(selector.value);
     if (qltdActiveView === 'budget') loadBudgetDashboardForSelectedProject({ force: true });
     if (qltdActiveView === 'admin') loadAdminMasterApprovals();
-    if (qltdActiveView === 'dashboard' || qltdActiveView === 'gantt') {
-      loadGanttDataForSelectedProject(selector.value);
-    }
+    if (qltdActiveView === 'dashboard') loadDashboardDataForSelectedProject(selector.value);
+    if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
   };
 }
 
@@ -799,7 +800,26 @@ const QLTD_WEEKLY_DEPT_ACCESS_MESSAGE = 'Bạn không được cấp quyền tru
 const QLTD_PLAN_DEPT_ACCESS_MESSAGE = 'Bạn không có quyền truy cập dữ liệu của phòng/ban này.';
 
 function qltdDevPerfEnabled() {
-  return ['localhost', '127.0.0.1'].includes(window.location.hostname) || new URLSearchParams(window.location.search).has('debugPerf');
+  return ['localhost', '127.0.0.1'].includes(window.location.hostname) ||
+    new URLSearchParams(window.location.search).get('debugPerf') === '1';
+}
+
+function qltdLogBackendPerformance(action, totalMs, payload) {
+  if (!qltdDevPerfEnabled()) return;
+  const server = payload && payload.performance || {};
+  console.info('[QLTD PERF]', {
+    requestId: server.requestId || '',
+    action,
+    totalMs: Math.round(totalMs),
+    serverMs: Number(server.serverMs || server.durationMs || 0),
+    responseBytes: Number(server.responseBytes || 0),
+    rowsRead: Number(server.rowsRead || 0),
+    cellsRead: Number(server.cellsRead || 0),
+    recordCount: Number(server.recordCount || 0),
+    cacheHit: !!server.cacheHit,
+    sourceCount: Number(server.sourceCount || 0),
+    sheetCount: Number(server.sheetCount || 0)
+  });
 }
 
 function findPrimaryNavContainer() {
@@ -1835,7 +1855,18 @@ function showWeb07View(viewName, options = {}) {
     ));
   });
 
-  if (viewName === 'dashboard' || viewName === 'gantt') {
+  if (viewName === 'dashboard') {
+    const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+    const needsDashboardData = projectCode && (
+      qltdGanttDirtyProjects.has(projectCode) ||
+      !qltdDashboardPayload ||
+      String(qltdDashboardPayload.projectCode || '') !== String(projectCode)
+    );
+    if (needsDashboardData) viewLoadPromise = loadDashboardDataForSelectedProject(projectCode);
+    else renderDashboardFromGanttData(qltdDashboardPayload);
+  }
+
+  if (viewName === 'gantt') {
     const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
     const needsGanttData = projectCode && (
       qltdGanttDirtyProjects.has(projectCode) ||
@@ -3308,7 +3339,7 @@ function getBackendErrorMessage(payload, fallback) {
 }
 
 function isDeptAccessDenied(payload) {
-  return ['ACCESS_DENIED', 'PERMISSION_DENIED', 'DEPT_SCOPE_DENIED', 'PROJECT_DEPT_NOT_ASSIGNED'].includes(getBackendErrorCode(payload));
+  return ['ACCESS_DENIED', 'PERMISSION_DENIED', 'DEPT_SCOPE_DENIED', 'PROJECT_DEPT_NOT_ASSIGNED', 'PROJECT_DEPT_UPDATE_FORBIDDEN', 'DELEGATED_PROGRESS_FIELDS_FORBIDDEN'].includes(getBackendErrorCode(payload));
 }
 
 function resetDeptScopedSelectionState() {
@@ -3496,7 +3527,10 @@ function dispatchDeptPlanRendered(payload, dept, master) {
       deptCode: dept?.deptCode || dept?.sheetName || '',
       masterTaskCode: master?.masterCode || '',
       masterWbs: getDeptPlanMasterWbs(master),
-      masterTaskName: master?.taskName || ''
+      masterTaskName: master?.taskName || '',
+      permissionSource: dept?.permissionSource || '',
+      permissionCode: dept?.permissionCode || '',
+      canUpdateProgress: !!dept?.canUpdateProgress
     }
   }));
 }
@@ -3680,11 +3714,16 @@ function renderWeeklyUpdatePanel(payload, dept, master, week, weekPeriods = []) 
           <label for="weeklyNextPlanInput">Kế hoạch tuần sau</label>
           <textarea id="weeklyNextPlanInput" placeholder="Nêu việc trọng tâm tuần sau...">${escapeHtml(draft.nextPlan || '')}</textarea>
         </div>
+        <div class="weekly-update-field">
+          <label for="weeklyRecommendationInput">Kiến nghị</label>
+          <textarea id="weeklyRecommendationInput" placeholder="Nêu kiến nghị cần xử lý nếu có...">${escapeHtml(draft.recommendation || '')}</textarea>
+        </div>
       </div>
 
       <div class="weekly-update-actions">
-        <button id="saveWeeklyDraftButton" type="button" class="weekly-update-button">Lưu nháp trên giao diện</button>
-        <span id="weeklyDraftStatus" class="weekly-update-note">Chưa ghi Google Sheet. Bước này chỉ kiểm tra UX và cấu trúc dữ liệu.</span>
+        <button id="saveWeeklyDraftButton" type="button" class="weekly-update-button">Lưu nháp báo cáo</button>
+        <button id="submitWeeklyReportButton" type="button" class="weekly-update-button">Gửi báo cáo</button>
+        <span id="weeklyDraftStatus" class="weekly-update-note">Báo cáo chưa được lưu.</span>
       </div>
     </section>
   `;
@@ -3702,7 +3741,8 @@ function captureWeeklyDraft() {
     result: document.getElementById('weeklyResultInput')?.value || '',
     percent: document.getElementById('weeklyPercentInput')?.value || '',
     issue: document.getElementById('weeklyIssueInput')?.value || '',
-    nextPlan: document.getElementById('weeklyNextPlanInput')?.value || ''
+    nextPlan: document.getElementById('weeklyNextPlanInput')?.value || '',
+    recommendation: document.getElementById('weeklyRecommendationInput')?.value || ''
   };
 }
 
@@ -3756,29 +3796,58 @@ function bindWeeklyUpdateControls() {
     };
   }
 
-  const saveButton = document.getElementById('saveWeeklyDraftButton');
-  if (saveButton) {
-    saveButton.onclick = () => {
+  const saveWeeklyReport = async (action) => {
       const payload = qltdDeptPlanPayload || {};
       const departments = payload.departments || [];
       const dept = departments.find((item) => (item.deptCode || item.sheetName) === qltdSelectedDeptCode) || departments[0] || {};
       const deptCode = dept.deptCode || dept.sheetName || '';
       const draftKey = getWeeklyDraftKey(payload.projectCode, deptCode, qltdSelectedMasterCode, qltdSelectedWeekId);
-
-      qltdWeeklyDrafts[draftKey] = {
+      const draft = {
         result: document.getElementById('weeklyResultInput')?.value || '',
         percent: document.getElementById('weeklyPercentInput')?.value || '',
         issue: document.getElementById('weeklyIssueInput')?.value || '',
         nextPlan: document.getElementById('weeklyNextPlanInput')?.value || '',
+        recommendation: document.getElementById('weeklyRecommendationInput')?.value || '',
         savedAt: new Date().toISOString()
       };
-
+      qltdWeeklyDrafts[draftKey] = draft;
       const draftStatus = document.getElementById('weeklyDraftStatus');
-      if (draftStatus) {
-        draftStatus.textContent = `Đã lưu nháp trên giao diện lúc ${new Date().toLocaleTimeString('vi-VN')}. Chưa ghi Google Sheet.`;
+      const delegatedProgress = dept.permissionSource === 'DELEGATED_ACCESS';
+      const request = {
+        action,
+        email: currentUserProfile?.email || '',
+        userEmail: currentUserProfile?.email || '',
+        projectCode: payload.projectCode || '',
+        deptCode,
+        weekCode: qltdSelectedWeekId,
+        thisWeekResult: draft.result,
+        issue: draft.issue,
+        recommendation: draft.recommendation,
+        taskCodes: qltdSelectedMasterCode || ''
+      };
+      if (!delegatedProgress) request.nextWeekPlan = draft.nextPlan;
+      if (draftStatus) draftStatus.textContent = action === 'weekly_submit' ? 'Đang gửi báo cáo...' : 'Đang lưu nháp...';
+      try {
+        const result = await postBackendJson(request);
+        if (!result.success) {
+          const backendError = new Error(getBackendErrorMessage(result, 'Không lưu được báo cáo tuần.'));
+          backendError.backendResult = result;
+          throw backendError;
+        }
+        const report = result.data?.report || result.report || {};
+        if (draftStatus) {
+          draftStatus.textContent = action === 'weekly_submit'
+            ? `Đã gửi báo cáo lúc ${new Date().toLocaleTimeString('vi-VN')} bởi ${report.submittedBy || currentUserProfile?.email || ''}.`
+            : `Đã lưu nháp lúc ${new Date().toLocaleTimeString('vi-VN')} bởi ${report.preparedBy || currentUserProfile?.email || ''}.`;
+        }
+      } catch (error) {
+        if (draftStatus) draftStatus.textContent = error.message || 'Không lưu được báo cáo tuần.';
       }
-    };
-  }
+  };
+  const saveButton = document.getElementById('saveWeeklyDraftButton');
+  if (saveButton) saveButton.onclick = () => saveWeeklyReport('weekly_savedraft');
+  const submitButton = document.getElementById('submitWeeklyReportButton');
+  if (submitButton) submitButton.onclick = () => saveWeeklyReport('weekly_submit');
 }
 
 function getWeeklyTaskCacheKey(projectCode, deptCode, weekCode) {
@@ -4776,7 +4845,7 @@ function renderWeeklySelectedForm(selected, saved) {
     <section class="weekly-form-section weekly-result-section"><div class="weekly-form-section-title"><span>KẾT QUẢ THỰC HIỆN TRONG TUẦN</span></div><div class="weekly-update-field"><label for="weeklyTaskResult">Kết quả thực hiện trong tuần</label><textarea id="weeklyTaskResult" placeholder="Nêu kết quả đã hoàn thành, sản phẩm đầu ra, mốc đã chốt...">${escapeHtml(saved?.thisWeekResult || '')}</textarea></div></section>
     <section class="weekly-form-section"><div class="weekly-form-section-title"><span>TÌNH TRẠNG CÔNG VIỆC</span></div><div class="weekly-update-grid"><div class="weekly-update-field"><label for="weeklyTaskProgress">Mức hoàn thành đến hết tuần (%)</label><input id="weeklyTaskProgress" type="number" min="0" max="100" step="1" value="${escapeHtml(progressValue)}"></div><div class="weekly-update-field"><label for="weeklyTaskStatus">Trạng thái công việc</label>${renderWeeklyStatusSelect(statusValue)}</div>${renderWeeklyActualDateLifecycle(selected, saved, progressValue, statusValue)}</div></section>
     <section class="weekly-form-section weekly-issue-section"><div class="weekly-form-section-title"><span>VƯỚNG MẮC VÀ XỬ LÝ</span></div><div class="weekly-update-grid"><div class="weekly-update-field"><label for="weeklyTaskIssue">Vướng mắc/Rủi ro</label><textarea id="weeklyTaskIssue" placeholder="Nêu vướng mắc, nguyên nhân, tác động nếu có...">${escapeHtml(saved?.issue || '')}</textarea></div><div class="weekly-update-field"><label for="weeklyTaskRecommendation">Giải pháp/Đề xuất</label><textarea id="weeklyTaskRecommendation" placeholder="Nêu hướng xử lý, người/phòng cần phối hợp, đề xuất quyết định...">${escapeHtml(saved?.recommendation || '')}</textarea></div></div></section>
-    ${renderWeeklyBudgetBlock(selected, saved)}</section>`;
+    ${qltdWeeklyTaskView.capabilities?.canWriteBudget === false ? '' : renderWeeklyBudgetBlock(selected, saved)}</section>`;
 }
 
 function renderWeeklySaveActions(selected, capabilities = {}) {
@@ -5589,7 +5658,10 @@ async function saveWeeklyTaskUpdate() {
   if (validation.error) { if (status) status.textContent = validation.error; return; }
   const projectCode = payload.projectCode;
   const deptCode = dept.deptCode || dept.sheetName || '';
-  const budgetPayload = buildWeeklyBudgetUpdates(projectCode, deptCode, qltdSelectedWeekId, item);
+  const delegatedProgress = qltdWeeklyTaskView.capabilities?.permissionSource === 'DELEGATED_ACCESS' || dept.permissionSource === 'DELEGATED_ACCESS';
+  const budgetPayload = delegatedProgress
+    ? { updates: [] }
+    : buildWeeklyBudgetUpdates(projectCode, deptCode, qltdSelectedWeekId, item);
   if (budgetPayload.error) { if (status) status.textContent = budgetPayload.error; return; }
   const reporterProposal = normalizeRoleKey(qltdWeeklyTaskView.capabilities?.role || currentUserProfile?.role) === 'REPORTER' && item.itemType === 'PB_DETAIL';
   if (reporterProposal) budgetPayload.updates = [];
@@ -5597,7 +5669,12 @@ async function saveWeeklyTaskUpdate() {
   const currentEffectiveState = getWeeklyEffectiveTaskState(item, currentUpdate);
   const progressEnd = validation.progressEnd; let confirmProgressDecrease = false;
   if (progressEnd < Number(currentEffectiveState.progress || 0)) { confirmProgressDecrease = window.confirm(`Tiến độ mới ${progressEnd}% thấp hơn tiến độ hiện tại ${currentEffectiveState.progress}%. Bạn có xác nhận?`); if (!confirmProgressDecrease) return; }
-  const body = { action: 'weekly_taskupdates_save', email: currentUserProfile?.email || '', projectCode, deptCode, weekCode: qltdSelectedWeekId, itemType: item.itemType, itemId: item.itemId, thisWeekResult: document.getElementById('weeklyTaskResult')?.value || '', progressEnd, taskStatus: validation.status || '', actualStart: validation.dates.actualStart || '', actualFinish: validation.dates.actualFinish || '', actualStartEdit: validation.dates.actualStartEdit || '', actualFinishEdit: validation.dates.actualFinishEdit || '', issue: document.getElementById('weeklyTaskIssue')?.value || '', recommendation: document.getElementById('weeklyTaskRecommendation')?.value || '', budgetThisWeek: document.getElementById('weeklyTaskBudget')?.value || '', budgetNote: document.getElementById('weeklyTaskBudgetNote')?.value || '', confirmProgressDecrease, budgetUpdates: budgetPayload.updates, requestId: getWeeklySaveRequestId(), expectedApprovalStatus: reporterProposal ? 'PENDING' : '' };
+  const body = { action: 'weekly_taskupdates_save', email: currentUserProfile?.email || '', projectCode, deptCode, weekCode: qltdSelectedWeekId, itemType: item.itemType, itemId: item.itemId, thisWeekResult: document.getElementById('weeklyTaskResult')?.value || '', progressEnd, taskStatus: validation.status || '', actualStart: validation.dates.actualStart || '', actualFinish: validation.dates.actualFinish || '', actualStartEdit: validation.dates.actualStartEdit || '', actualFinishEdit: validation.dates.actualFinishEdit || '', issue: document.getElementById('weeklyTaskIssue')?.value || '', recommendation: document.getElementById('weeklyTaskRecommendation')?.value || '', confirmProgressDecrease, requestId: getWeeklySaveRequestId(), expectedApprovalStatus: reporterProposal ? 'PENDING' : '' };
+  if (!delegatedProgress) {
+    body.budgetThisWeek = document.getElementById('weeklyTaskBudget')?.value || '';
+    body.budgetNote = document.getElementById('weeklyTaskBudgetNote')?.value || '';
+    body.budgetUpdates = budgetPayload.updates;
+  }
   if (button) { button.disabled = true; button.dataset.saving = '1'; button.textContent = reporterProposal ? 'Đang gửi...' : 'Đang lưu...'; }
   try {
     const result = await postBackendJson(body);
@@ -5931,6 +6008,39 @@ function qltdWeb07RequestGanttPayload(projectCode, options = {}) {
   return qltdWeb07GetOrCreateGanttRequest(requestKey, () => qltdWeb07FetchGanttPayload(code, options));
 }
 
+function qltdWeb07RequestDashboardPayload(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code) return Promise.resolve(null);
+  const requestKey = options.forceRefresh ? code + '::force' : code;
+  return qltdWeb07GetOrCreateGanttRequest('dashboard::' + requestKey, () => fetchBackendJson('dashboardSummary', {
+    projectCode: code,
+    forceRefresh: options.forceRefresh ? '1' : ''
+  }, { auth: true }));
+}
+
+async function loadDashboardDataForSelectedProject(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code) return null;
+  const selectedProjectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+  if (selectedProjectCode && String(selectedProjectCode) !== code) return null;
+  const requestSeq = ++qltdDashboardLoadRequestSeq;
+  if (options.forceRefresh && qltdGanttPayload && String(qltdGanttPayload.projectCode || '') === code) {
+    qltdGanttPayload = null;
+  }
+  renderDashboardLoading(code);
+  try {
+    const payload = await qltdWeb07RequestDashboardPayload(code, options);
+    if (requestSeq !== qltdDashboardLoadRequestSeq || qltdActiveView !== 'dashboard') return payload;
+    qltdDashboardPayload = payload;
+    await loadMainMilestonesForProject(code, payload);
+    renderDashboardFromGanttData(payload);
+    return payload;
+  } catch (error) {
+    if (requestSeq === qltdDashboardLoadRequestSeq && qltdActiveView === 'dashboard') renderDashboardError(error);
+    return null;
+  }
+}
+
 function loadGanttDataForSelectedProject(projectCode, options = {}) {
   const code = String(projectCode || '').trim();
   if (!code) return Promise.resolve(null);
@@ -5946,7 +6056,6 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
   const requestSeq = ++qltdGanttLoadRequestSeq;
   ensureWeb07Panels();
   renderGanttLoading(projectCode);
-  renderDashboardLoading(projectCode);
 
   try {
     const scheduleStateRequest = loadProjectScheduleState(projectCode, { render: false });
@@ -5961,9 +6070,10 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
     await scheduleStateRequest;
     if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return payload;
     qltdGanttPayload = payload;
+    qltdDashboardPayload = payload;
     if (qltdActiveView === 'report' && qltdDeptPlanPayload?.success) renderDeptPlans(qltdDeptPlanPayload);
     await loadMainMilestonesForProject(projectCode, payload);
-    renderDashboardFromGanttData(payload);
+    if (qltdActiveView === 'dashboard') renderDashboardFromGanttData(payload);
     renderGanttPanel(payload);
     qltdGanttDirtyProjects.delete(projectCode);
     qltdGanttForceRefreshProjects.delete(projectCode);
@@ -5972,7 +6082,7 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
     console.error('Cannot load gantt data', error);
     if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return null;
     qltdGanttPayload = null;
-    renderDashboardError(error);
+    if (qltdActiveView === 'dashboard') renderDashboardError(error);
     renderGanttError(error);
     return null;
   }
@@ -6220,7 +6330,10 @@ function renderDashboardFromGanttData(payload) {
   bindDashboardContextFilters(payload);
   const refreshButton = document.getElementById('execRefreshButton');
   if (refreshButton) {
-    refreshButton.onclick = () => loadGanttDataForSelectedProject(payload.projectCode || getStoredProjectCode());
+    refreshButton.onclick = () => loadDashboardDataForSelectedProject(
+      payload.projectCode || getStoredProjectCode(),
+      { forceRefresh: true }
+    );
   }
 }
 
@@ -6238,7 +6351,7 @@ function bindDashboardModeSwitch() {
       if (mode === qltdDashboardMode) return;
       qltdDashboardMode = mode;
       if (mode === 'department') loadAndRenderDepartmentDashboard();
-      else if (qltdGanttPayload) renderDashboardFromGanttData(qltdGanttPayload);
+      else if (qltdDashboardPayload) renderDashboardFromGanttData(qltdDashboardPayload);
     };
   });
 }
@@ -6250,7 +6363,7 @@ async function getDepartmentDashboardPayloads(projectCode, forceRefresh) {
     const code = String(project.projectCode || '');
     if (!forceRefresh && qltdDepartmentDashboardCache.has(code)) return qltdDepartmentDashboardCache.get(code);
     try {
-      const payload = await qltdWeb07RequestGanttPayload(code, { forceRefresh: !!forceRefresh });
+      const payload = await qltdWeb07RequestDashboardPayload(code, { forceRefresh: !!forceRefresh });
       if (!payload || payload.success === false) throw new Error(payload && (payload.message || payload.error) || 'INVALID_PAYLOAD');
       qltdDepartmentDashboardCache.set(code, payload);
       return payload;
@@ -6910,7 +7023,12 @@ function bindDashboardTaskLinks() {
 async function openDashboardTaskInGantt(taskId, projectCode = '') {
   if (!taskId) return;
   const targetProjectCode = String(projectCode || '').trim();
-  const currentProjectCode = String(qltdGanttPayload && qltdGanttPayload.projectCode || getStoredProjectCode() || '').trim();
+  const currentProjectCode = String(
+    targetProjectCode ||
+    document.getElementById('projectSelector')?.value ||
+    getStoredProjectCode() ||
+    ''
+  ).trim();
 
   if (targetProjectCode && targetProjectCode !== currentProjectCode) {
     const selector = document.getElementById('projectSelector');
@@ -6918,6 +7036,8 @@ async function openDashboardTaskInGantt(taskId, projectCode = '') {
     setStoredProjectCode(targetProjectCode);
     loadDeptPlansForSelectedProject(targetProjectCode);
     await loadGanttDataForSelectedProject(targetProjectCode);
+  } else if (!qltdGanttPayload || String(qltdGanttPayload.projectCode || '') !== currentProjectCode) {
+    await loadGanttDataForSelectedProject(currentProjectCode);
   }
 
   showWeb07View('gantt');
@@ -9707,6 +9827,7 @@ async function fetchBackendJson(action, params = {}, options = {}) {
         url.searchParams.set(key, value);
       }
     });
+    if (qltdDevPerfEnabled()) url.searchParams.set('debugPerf', '1');
 
     if (includeAuth && auth && auth.currentUser) {
       url.searchParams.set('email', auth.currentUser.email || url.searchParams.get('email') || '');
@@ -9730,14 +9851,24 @@ async function fetchBackendJson(action, params = {}, options = {}) {
       continue;
     }
 
-    if (qltdDevPerfEnabled()) console.info(`[QLTD PERF] ${action}: ${Math.round(performance.now() - startedAt)}ms`);
+    qltdLogBackendPerformance(action, performance.now() - startedAt, payload);
     return payload;
   }
 }
 
 async function fetchBackendProfile() {
-  await fetchBackendJson('health');
   return fetchBackendJson('profile');
+}
+
+function scheduleNotificationsLoad() {
+  const run = () => {
+    if (auth?.currentUser && isAuthenticatedUser()) void loadNotifications();
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 3000 });
+  } else {
+    window.setTimeout(run, 1200);
+  }
 }
 
 function renderApp(user, role, profile = {}) {
@@ -9754,7 +9885,7 @@ function renderApp(user, role, profile = {}) {
   bindWeb07Navigation();
   showWeb07View('dashboard');
   qltdProjectsLoadPromise = loadProjectsForSelector();
-  void loadNotifications();
+  scheduleNotificationsLoad();
 
   if (els.userAvatar) {
     els.userAvatar.src = user.photoURL || '';
