@@ -26,7 +26,7 @@ import {
   migrateMainMilestoneKeys,
   toggleMainMilestoneTaskKey
 } from './main-milestone-logic.js?v=WEEKLY_HANGMUC_MILESTONE_V3';
-import { buildDepartmentDashboardModel, getDepartmentOwnerPresentation, getDepartmentPerformancePresentation } from './department-dashboard.js?v=PB_DASHBOARD_DEPT_MAPPING_3';
+import { buildDepartmentDashboardModel, getDepartmentOwnerPresentation, getDepartmentPerformancePresentation } from './department-dashboard.js?v=EXACT_ROW_ZONE_HANGMUC_V4';
 import { getMonthWeekPeriods } from './weekly-periods.js?v=STEP_3B2E4_ACTUAL_DATE_LIFECYCLE';
 import { createRegistrationGate } from './registration-gate.js?v=BUG7_EMPLOYEE_REGISTRATION_1';
 
@@ -3569,7 +3569,9 @@ function enrichDeptPlanPayloadWithOfficialMasters(payload) {
         const progress = Number(official.percent ?? Math.round(Number(official.progress || 0) * 100));
         return {
           ...master,
-          taskName: official.text || master.taskName || '',
+          taskName: official.taskName || '',
+          ownZone: String(official.ownZone || '').trim(),
+          ownHangMuc: String(official.ownHangMuc || '').trim(),
           officialWbs: official.wbs || master.stt || '',
           planStart: official.baselineStart || official.start_date || master.planStart || '',
           planFinish: official.baselineEnd || official.end_date || official.deadline || master.planFinish || '',
@@ -3655,7 +3657,7 @@ function renderSelectedDeptPlanLegacy() {
         <select id="weeklyMasterSelector">
           ${masters.map((master) => `
             <option value="${escapeHtml(master.masterCode || '')}" ${master.masterCode === qltdSelectedMasterCode ? 'selected' : ''}>
-              ${getDeptPlanMasterWbs(master) ? `${escapeHtml(getDeptPlanMasterWbs(master))} · ` : ''}${escapeHtml(master.taskName || '')}
+              ${getDeptPlanMasterWbs(master) ? `${escapeHtml(getDeptPlanMasterWbs(master))} · ` : ''}${escapeHtml(qltdExactRowDisplayTitle(master))}
             </option>
           `).join('')}
         </select>
@@ -3703,8 +3705,7 @@ function renderSelectedDeptPlanLegacy() {
               <tr>
                 <td class="mono" title="Mã kỹ thuật: ${escapeHtml(master.masterCode || '')}">${escapeHtml(getDeptPlanMasterWbs(master))}</td>
                 <td>
-                  <div class="task-title">${escapeHtml(master.taskName || '')}</div>
-                  ${master.contextName ? `<div class="task-context">${escapeHtml(master.contextName)}</div>` : ''}
+                  <div class="task-title">${escapeHtml(qltdExactRowDisplayTitle(master))}</div>
                 </td>
                 <td>${escapeHtml(master.planFinish || '')}</td>
                 <td>${escapeHtml(slots.length || 0)}</td>
@@ -4210,9 +4211,10 @@ function renderDeptPlanTab(payload, dept, masters, selectedMaster) {
       <div class="dept-objective-card-heading"><div class="report-section-heading">Mục tiêu đang chọn</div></div>
       <div class="dept-objective-selector">
         <label for="weeklyMasterSelector">Chọn mục tiêu</label>
-        <select id="weeklyMasterSelector" title="${escapeHtml(selectedMaster?.taskName || '')}">${masters.map((master) => `<option value="${escapeHtml(master.masterCode || '')}" ${master.masterCode === qltdSelectedMasterCode ? 'selected' : ''}>${escapeHtml(getDeptPlanMasterWbs(master) ? `${getDeptPlanMasterWbs(master)} · ${master.taskName || ''}` : master.taskName || '')}</option>`).join('')}</select>
+        <select id="weeklyMasterSelector" title="${escapeHtml(qltdExactRowDisplayTitle(selectedMaster))}">${masters.map((master) => `<option value="${escapeHtml(master.masterCode || '')}" ${master.masterCode === qltdSelectedMasterCode ? 'selected' : ''}>${escapeHtml(getDeptPlanMasterWbs(master) ? `${getDeptPlanMasterWbs(master)} · ${qltdExactRowDisplayTitle(master)}` : qltdExactRowDisplayTitle(master))}</option>`).join('')}</select>
       </div>
-      ${renderDeptObjectiveContext(selectedMaster)}
+      <div class="task-title">${escapeHtml(qltdExactRowDisplayTitle(selectedMaster))}</div>
+      ${renderDeptObjectiveOwnZone(selectedMaster)}
       <div class="dept-objective-hierarchy">
         <div><span>WBS</span><strong class="mono">${escapeHtml(getDeptPlanMasterWbs(selectedMaster) || '—')}</strong></div>
         <div><span>Bắt đầu</span><strong>${escapeHtml(formatIsoDateVi(selectedMaster?.planStart || '') || '—')}</strong></div>
@@ -4231,7 +4233,7 @@ function renderDeptPlanTab(payload, dept, masters, selectedMaster) {
       <div class="dept-plan-table-wrap"><table class="dept-plan-table report-master-table"><thead><tr><th>WBS</th><th>Mục tiêu/Công việc gốc</th><th>Bắt đầu KH</th><th>Kết thúc KH</th><th>Việc chi tiết</th><th>Tiến độ</th><th>Trạng thái</th></tr></thead><tbody>
         ${masterList.visible.map((master) => {
           const overdue = qltdDeptPlanIsOverdue(master, todayIso);
-          return `<tr data-master-select="${escapeHtml(master.masterCode || '')}" class="report-master-row ${overdue ? 'is-overdue' : ''}"><td class="mono">${escapeHtml(getDeptPlanMasterWbs(master))}</td><td><div class="task-title">${escapeHtml(master.taskName || '')}</div>${renderDeptObjectiveOwnCategory(master)}${renderMasterCompletionWarning(master, true)}</td><td>${escapeHtml(formatIsoDateVi(master.planStart || '') || '—')}</td><td>${escapeHtml(formatIsoDateVi(master.planFinish || '') || '—')}</td><td><button type="button" class="detail-count-button" data-detail-popup="${escapeHtml(master.masterCode || '')}">${renderMasterDetailCount(master)}</button></td><td>${escapeHtml(master.progress ?? 0)}%</td><td>${escapeHtml(master.status || 'Chưa cập nhật')}${overdue ? '<span class="dept-overdue-badge">Quá hạn</span>' : ''}</td></tr>`;
+          return `<tr data-master-select="${escapeHtml(master.masterCode || '')}" class="report-master-row ${overdue ? 'is-overdue' : ''}"><td class="mono">${escapeHtml(getDeptPlanMasterWbs(master))}</td><td><div class="task-title">${escapeHtml(qltdExactRowDisplayTitle(master))}</div>${renderMasterCompletionWarning(master, true)}</td><td>${escapeHtml(formatIsoDateVi(master.planStart || '') || '—')}</td><td>${escapeHtml(formatIsoDateVi(master.planFinish || '') || '—')}</td><td><button type="button" class="detail-count-button" data-detail-popup="${escapeHtml(master.masterCode || '')}">${renderMasterDetailCount(master)}</button></td><td>${escapeHtml(master.progress ?? 0)}%</td><td>${escapeHtml(master.status || 'Chưa cập nhật')}${overdue ? '<span class="dept-overdue-badge">Quá hạn</span>' : ''}</td></tr>`;
         }).join('')}
       </tbody></table></div>
       ${masterList.total > 5 ? `<div class="dept-plan-list-footer"><button type="button" class="dept-plan-list-toggle" data-dept-master-list-toggle aria-expanded="${qltdDeptMasterListExpanded}">${qltdDeptMasterListExpanded ? 'Thu gọn' : `Xem thêm ${masterList.remaining} mục tiêu`}</button></div>` : ''}
@@ -4240,14 +4242,13 @@ function renderDeptPlanTab(payload, dept, masters, selectedMaster) {
 
 function renderDeptObjectiveContext(master, compact = false) {
   if (!master) return '';
-  const badges = [master.zone, master.hangMuc].filter((value, index, values) => value && values.indexOf(value) === index);
+  const badges = [master.ownZone, master.ownHangMuc].filter((value, index, values) => value && values.indexOf(value) === index);
   const warning = (master.mappingWarnings || []).includes('MASTER_TASK_NOT_FOUND')
     ? 'Không tìm thấy mã Master để resolve context.'
     : '';
-  if (!badges.length && !master.contextPath && !warning) return '';
-  return `<div class="task-context ${compact ? 'compact' : ''}" title="${escapeHtml(master.contextPath || warning)}">
+  if (!badges.length && !warning) return '';
+  return `<div class="task-context ${compact ? 'compact' : ''}" title="${escapeHtml(warning)}">
     ${badges.map((badge) => `<span class="web07-chip">[${escapeHtml(badge)}]</span>`).join(' ')}
-    ${master.contextPath ? `<span>${escapeHtml(master.contextPath)}</span>` : ''}
     ${warning ? `<span>${escapeHtml(warning)}</span>` : ''}
   </div>`;
 }
@@ -4441,24 +4442,37 @@ function getWeeklyEffectiveTaskState(item, saved) {
   };
 }
 
-function renderDeptObjectiveOwnCategory(master) {
-  const hangMuc = String(master?.ownHangMuc || '').trim();
-  return hangMuc ? `<div class="task-context compact"><span class="web07-chip">[${escapeHtml(hangMuc)}]</span></div>` : '';
+function qltdExactRowOwnZone(item = {}) {
+  return String(item?.ownZone || '').trim();
+}
+
+function qltdExactRowOwnHangMuc(item = {}) {
+  return String(item?.ownHangMuc || '').trim();
+}
+
+function qltdNormalizeExactRowTitlePart(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('vi-VN').replace(/\s*-\s*/g, '-');
+}
+
+function qltdExactRowDisplayTitle(item = {}) {
+  const base = String(item?.taskName || item?.itemName || item?.itemId || '').trim().replace(/\s+/g, ' ');
+  const hangMuc = qltdExactRowOwnHangMuc(item).replace(/\s+/g, ' ');
+  if (!base || !hangMuc) return base;
+  if (qltdNormalizeExactRowTitlePart(base).endsWith(qltdNormalizeExactRowTitlePart(hangMuc))) return base;
+  return `${base} - ${hangMuc}`;
+}
+
+function renderDeptObjectiveOwnZone(master) {
+  const zone = qltdExactRowOwnZone(master);
+  return zone ? `<div class="task-context compact"><span class="web07-chip">[${escapeHtml(zone)}]</span></div>` : '';
 }
 
 function qltdWeeklyCategoryName(item = {}) {
-  return String(item?.hangMuc || '').trim();
+  return qltdExactRowOwnHangMuc(item);
 }
 
 function qltdWeeklyDisplayTitle(item = {}) {
-  const source = item || {};
-  const base = String(source.taskName || source.itemName || source.itemId || '').trim();
-  const category = qltdWeeklyCategoryName(source);
-  if (!base || !category) return base;
-  const normalizedBase = normalizeSearchText(base);
-  const normalizedCategory = normalizeSearchText(category);
-  if (normalizedCategory && normalizedBase.includes(normalizedCategory)) return base;
-  return `${base} — ${category}`;
+  return qltdExactRowDisplayTitle(item);
 }
 
 function qltdWeeklyEnrichItemsForDisplay(items) {
@@ -4470,7 +4484,7 @@ function qltdWeeklyEnrichItemsForDisplay(items) {
 }
 
 function renderWeeklyZoneBadge(item = {}) {
-  const zone = String(item?.zone || '').trim();
+  const zone = qltdExactRowOwnZone(item);
   return zone ? `<span class="weekly-workflow-badge is-zone">${escapeHtml(zone)}</span>` : '';
 }
 
@@ -4559,7 +4573,7 @@ function qltdWeeklyFilterWorkItems(items, updates, context, week, filters, userE
   const statuses = Array.isArray(filters?.statuses) ? filters.statuses : [];
   const filtered = source.filter((item) => {
     const saved = findWeeklySavedUpdate(updates, item, context);
-    const haystack = normalizeSearchText([item.wbs, item.taskName, item.displayTitle, item.zone, item.hangMuc, item.itemId, item.masterTaskCode, item.owner, item.coordinator].join(' '));
+    const haystack = normalizeSearchText([item.wbs, item.taskName, item.displayTitle, item.ownZone, item.ownHangMuc, item.itemId, item.masterTaskCode, item.owner, item.coordinator].join(' '));
     if (search && !haystack.includes(search)) return false;
     if (ownership === 'OWNED' && !qltdWeeklyPersonHasEmail(item.owner, userEmail)) return false;
     if (ownership === 'COORDINATED' && !qltdWeeklyPersonHasEmail(item.coordinator, userEmail)) return false;
@@ -5284,8 +5298,8 @@ function qltdWeeklyBuildExportModel(items, updates, context, week, reportType = 
     const cells = {
       sequence: index + 1,
       wbs: text(item.wbs),
-      zone: text(item.zone),
-      hangMuc: text(item.hangMuc),
+      zone: text(item.ownZone),
+      hangMuc: text(item.ownHangMuc),
       content: text(qltdWeeklyDisplayTitle(item, entry.parent) || item.taskName),
       owner: person(item.owner),
       coordinator: person(item.coordinator),
@@ -6781,7 +6795,7 @@ function buildExecutiveDashboardModel(payload, contextFilters = {}) {
   const inProgress = realTasks.filter((task) => !task.isCompleted && task.normalizedStatus === 'in-progress');
   const notStarted = realTasks.filter((task) => !task.isCompleted && task.normalizedStatus === 'not-started');
   const hasStrictMilestones = enriched.some((task) => task.isMilestone);
-  const unmappedContext = realTasks.filter((task) => !String(task.hangMuc || '').trim());
+  const unmappedContext = realTasks.filter((task) => !qltdExactRowOwnHangMuc(task));
   const milestoneTasks = dashboardTasks.filter((task) => task.isMilestone || (!hasStrictMilestones && task.isMilestoneFallback));
 
   const allOverdue = allOpenTasks
@@ -6922,7 +6936,7 @@ function buildExecutiveTaskContext(tasks) {
       parentLevel1: path[0] || '',
       parentLevel2: path[1] || '',
       parentLevel3: path[2] || '',
-      contextLabel: String(item.hangMuc || '').trim(),
+      contextLabel: qltdExactRowOwnHangMuc(item),
       highestVisibleTask: !incompleteRealAncestor
     };
   });
@@ -6936,8 +6950,18 @@ function isNormalizedCountedTask(task) {
 function executiveTaskMatchesContextFilters(task, filters = {}) {
   return ['zone', 'loaiCongTrinh', 'congTrinh', 'hangMuc'].every((key) => {
     const expected = String(filters[key] || '').trim();
-    return !expected || String(task[key] || '').trim() === expected;
+    return !expected || qltdDashboardTaskField(task, key) === expected;
   });
+}
+
+function qltdDashboardTaskField(task, key) {
+  if (key === 'zone') return qltdExactRowOwnZone(task);
+  if (key === 'hangMuc') return qltdExactRowOwnHangMuc(task);
+  return String(task?.[key] || '').trim();
+}
+
+function qltdDashboardUniqueTaskValues(tasks, key) {
+  return Array.from(new Set((tasks || []).map((task) => qltdDashboardTaskField(task, key)).filter(Boolean))).sort();
 }
 
 function renderDashboardContextFilters(tasks) {
@@ -6948,9 +6972,9 @@ function renderDashboardContextFilters(tasks) {
     ['hangMuc', 'Hạng mục']
   ].map(([key, label]) => {
     const scopedTasks = key === 'hangMuc' && qltdDashboardContextFilters.zone
-      ? tasks.filter((task) => String(task.zone || '') === qltdDashboardContextFilters.zone)
+      ? tasks.filter((task) => qltdExactRowOwnZone(task) === qltdDashboardContextFilters.zone)
       : tasks;
-    return { key, label, values: getUniqueTaskValues(scopedTasks, key) };
+    return { key, label, values: qltdDashboardUniqueTaskValues(scopedTasks, key) };
   }).filter((field) => field.values.length);
   if (!fields.length) return '';
   return `<section class="exec-context-filter-card" aria-label="Lọc context Dashboard">
@@ -6970,7 +6994,7 @@ function qltdNormalizeDashboardContextFilters(tasks, filters = {}) {
   const next = {};
   ['zone', 'loaiCongTrinh', 'congTrinh', 'hangMuc'].forEach((key) => {
     const value = String(filters[key] || '').trim();
-    const values = getUniqueTaskValues(tasks, key);
+    const values = qltdDashboardUniqueTaskValues(tasks, key);
     next[key] = value && values.includes(value) ? value : '';
   });
   return next;
@@ -7161,10 +7185,10 @@ function renderExecutiveListSection(title, headers, rows, rowRenderer, emptyText
 }
 
 function renderExecutiveOverdueRow(task) {
-  const hangMuc = task.hangMuc || 'Chưa xác định Hạng mục';
+  const hangMuc = qltdExactRowOwnHangMuc(task) || '—';
   return `
     <tr class="web07-alert-row" data-task-id="${escapeHtml(task.id || '')}">
-      <td class="exec-context" title="${escapeHtml(task.contextPath || '')}">${escapeHtml(hangMuc)}</td>
+      <td class="exec-context" title="${escapeHtml(hangMuc)}">${escapeHtml(hangMuc)}</td>
       <td class="exec-task" title="${escapeHtml(task.text || '')}"><span>${escapeHtml(task.priorityIcon)}</span>${escapeHtml(task.text || '')}</td>
       <td>${escapeHtml(task.owner || 'Chưa rõ')}</td>
       <td>${escapeHtml(formatIsoDateVi(toIsoDateLocal(task.endDate)))}</td>
@@ -7176,10 +7200,10 @@ function renderExecutiveOverdueRow(task) {
 function renderExecutiveMilestoneRow(task) {
   const timeText = task.lateDays > 0 ? `Trễ ${task.lateDays} ngày` : `Còn ${task.remainingDays ?? 0} ngày`;
   const badgeClass = task.lateDays > 0 ? 'is-red' : 'is-blue';
-  const hangMuc = task.hangMuc || 'Chưa xác định Hạng mục';
+  const hangMuc = qltdExactRowOwnHangMuc(task) || '—';
   return `
     <tr class="web07-alert-row" data-task-id="${escapeHtml(task.id || '')}">
-      <td class="exec-context" title="${escapeHtml(task.contextPath || '')}">${escapeHtml(hangMuc)}</td>
+      <td class="exec-context" title="${escapeHtml(hangMuc)}">${escapeHtml(hangMuc)}</td>
       <td class="exec-task" title="${escapeHtml(task.text || '')}"><span>${escapeHtml(task.priorityIcon)}</span>${escapeHtml(task.text || '')}</td>
       <td>${escapeHtml(task.owner || 'Chưa rõ')}</td>
       <td>${escapeHtml(task.endDate ? formatIsoDateVi(toIsoDateLocal(task.endDate)) : '')}</td>
@@ -7189,10 +7213,10 @@ function renderExecutiveMilestoneRow(task) {
 }
 
 function renderExecutiveUpcomingRow(task) {
-  const hangMuc = task.hangMuc || 'Chưa xác định Hạng mục';
+  const hangMuc = qltdExactRowOwnHangMuc(task) || '—';
   return `
     <tr class="web07-alert-row" data-task-id="${escapeHtml(task.id || '')}">
-      <td class="exec-context" title="${escapeHtml(task.contextPath || '')}">${escapeHtml(hangMuc)}</td>
+      <td class="exec-context" title="${escapeHtml(hangMuc)}">${escapeHtml(hangMuc)}</td>
       <td class="exec-task" title="${escapeHtml(task.text || '')}"><span>${escapeHtml(task.priorityIcon)}</span>${escapeHtml(task.text || '')}</td>
       <td>${escapeHtml(task.owner || 'Chưa rõ')}</td>
       <td>${escapeHtml(formatIsoDateVi(toIsoDateLocal(task.endDate)))}</td>
@@ -7222,7 +7246,7 @@ function renderExecutiveCompletedSection(rows) {
             <tbody>
               ${rows.map((task) => `
                 <tr class="web07-alert-row" data-task-id="${escapeHtml(task.id || '')}">
-                  <td class="exec-context" title="${escapeHtml(task.contextPath || '')}">${escapeHtml(task.hangMuc || 'Chưa xác định Hạng mục')}</td>
+                  <td class="exec-context" title="${escapeHtml(qltdExactRowOwnHangMuc(task) || '—')}">${escapeHtml(qltdExactRowOwnHangMuc(task) || '—')}</td>
                   <td class="exec-task" title="${escapeHtml(task.text || '')}"><span>${escapeHtml(task.priorityIcon)}</span>${escapeHtml(task.text || '')}</td>
                   <td>${escapeHtml(task.owner || 'Chưa rõ')}</td>
                   <td>${escapeHtml(formatIsoDateVi(toIsoDateLocal(task.actualFinishDate)))}</td>
@@ -7495,8 +7519,8 @@ function renderGanttPanel(payload) {
   }
 
   const owners = getUniqueTaskValues(payload.data || [], 'owner');
-  const zones = getUniqueTaskValues(payload.data || [], 'zone');
-  const hangMucs = getUniqueTaskValues(payload.data || [], 'hangMuc');
+  const zones = getUniqueTaskValues(payload.data || [], 'ownZone');
+  const hangMucs = getUniqueTaskValues(payload.data || [], 'ownHangMuc');
   const canViewMilestoneColumn = canViewMainMilestoneColumn();
   const canResetMilestone = canResetMainMilestone();
   const canExport = canExportExcel();
@@ -7712,11 +7736,11 @@ function applyGanttFilters() {
   const hasBusinessFilter = !!search || !!owner || !!zone || !!hangMuc ||
     status !== 'all' || progressFilter !== 'all';
   const matchedTasks = hasActiveFilter ? allTasks.filter((task) => {
-    const matchSearch = !search || normalizeSearchText(`${task.wbs || ''} ${task.id || ''} ${task.code || ''} ${task.text || ''} ${task.zone || ''} ${task.hangMuc || ''} ${task.contextPath || ''}`).includes(search);
+    const matchSearch = !search || normalizeSearchText(`${task.wbs || ''} ${task.id || ''} ${task.code || ''} ${task.text || ''} ${task.ownZone || ''} ${task.ownHangMuc || ''}`).includes(search);
     const taskOwner = task.owner || '__blank__';
     const matchOwner = !owner || taskOwner === owner;
-    const matchZone = !zone || String(task.zone || '') === zone;
-    const matchHangMuc = !hangMuc || String(task.hangMuc || '') === hangMuc;
+    const matchZone = !zone || qltdExactRowOwnZone(task) === zone;
+    const matchHangMuc = !hangMuc || qltdExactRowOwnHangMuc(task) === hangMuc;
     const matchStatus = status === 'all' || normalizeStatusForFilter(task.status) === status;
     const matchProgress = progressFilter === 'all' || getScheduleState(task) === progressFilter;
     const matchDepth = shouldShowByDepth(task, depthFilter);
@@ -9209,9 +9233,9 @@ async function initDhtmlxGantt(tasks, links) {
       Mã công việc: ${escapeHtml(task.code || '')}<br>
       Chủ trì: ${escapeHtml(task.owner || '')}<br>
       Trạng thái: ${escapeHtml(task.status || '')}<br>
-      Zone: ${escapeHtml(task.zone || '')}<br>
+      Zone: ${escapeHtml(task.ownZone || '')}<br>
       Công trình: ${escapeHtml(task.congTrinh || '')}<br>
-      Hạng mục: ${escapeHtml(task.hangMuc || '')}<br>
+      Hạng mục: ${escapeHtml(task.ownHangMuc || '')}<br>
       Context: ${escapeHtml(task.contextPath || '')}<br>
       Bắt đầu kế hoạch: ${escapeHtml(formatIsoDateVi(task.baselineStart || task.start_date || ''))}<br>
       Kết thúc kế hoạch: ${escapeHtml(formatIsoDateVi(task.baselineEnd || task.end_date || ''))}<br>

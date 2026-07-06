@@ -69,10 +69,12 @@ assert.equal(context.qltdWeb07GetTaskDisplayStart(scheduled), '2025-12-11');
 assert.equal(context.qltdWeb07GetTaskDisplayEnd({ ...scheduled, end_date: '2025-12-12' }), '2027-01-14');
 
 assert.doesNotMatch(app, /function getExecutiveTaskCategoryFromColF/);
-assert.match(app, /contextLabel: String\(item\.hangMuc \|\| ''\)\.trim\(\)/);
-assert.match(app, /const unmappedContext = realTasks\.filter\(\(task\) => !String\(task\.hangMuc \|\| ''\)\.trim\(\)\)/);
+assert.match(app, /contextLabel: qltdExactRowOwnHangMuc\(item\)/);
+assert.match(app, /const unmappedContext = realTasks\.filter\(\(task\) => !qltdExactRowOwnHangMuc\(task\)\)/);
 assert.match(app, /\.filter\(\(field\) => field\.values\.length\)/);
-assert.match(app, /title="\$\{escapeHtml\(task\.contextPath \|\| ''\)\}"/);
+assert.doesNotMatch(app, /class="exec-context" title="\$\{escapeHtml\(task\.contextPath \|\| ''\)\}"/);
+assert.match(app, /function qltdDashboardTaskField[\s\S]*key === 'zone'[\s\S]*qltdExactRowOwnZone/);
+assert.match(app, /function qltdDashboardTaskField[\s\S]*key === 'hangMuc'[\s\S]*qltdExactRowOwnHangMuc/);
 assert.match(app, /qltd-zone-summary/);
 assert.match(app, /qltd-structural-summary/);
 assert.match(app, /qltd-scheduled-group/);

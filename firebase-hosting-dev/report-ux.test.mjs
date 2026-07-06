@@ -514,6 +514,10 @@ const objectiveRenderContext = {
 vm.createContext(objectiveRenderContext);
 vm.runInContext([
   extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
+  extractFunction(app, 'qltdExactRowOwnZone'),
+  extractFunction(app, 'qltdExactRowOwnHangMuc'),
+  extractFunction(app, 'qltdNormalizeExactRowTitlePart'),
+  extractFunction(app, 'qltdExactRowDisplayTitle'),
   extractFunction(app, 'qltdWeeklyCategoryName'),
   extractFunction(app, 'qltdWeeklyDisplayTitle'),
   extractFunction(app, 'renderWeeklyZoneBadge'),
@@ -525,11 +529,13 @@ assert.match(readonlyObjective, /Chỉ xem/);
 assert.doesNotMatch(readonlyObjective, /data-weekly-select/);
 const editableObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ itemType: 'MASTER', itemId: 'M1', taskName: 'Mục tiêu', progress: 20 }], [], {}, {}, true);
 assert.match(editableObjective, /data-weekly-select="MASTER:M1"/);
-const categoryObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ itemType: 'MASTER', itemId: 'M2', taskName: 'Duplicate name', hangMuc: 'LK02', progress: 20 }], [], {}, {}, true);
-assert.match(categoryObjective, /Duplicate name — LK02/);
-assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc', hangMuc: '' }), 'Tên công việc');
-assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc — LK02', hangMuc: 'LK02' }), 'Tên công việc — LK02');
-assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc', hangMuc: '', parentMasterTaskCode: 'M-PARENT' }, { hangMuc: 'PARENT' }), 'Tên công việc');
+const categoryObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ itemType: 'MASTER', itemId: 'M2', taskName: 'Duplicate name', ownZone: 'Zone 1', ownHangMuc: 'LK02', progress: 20 }], [], {}, {}, true);
+assert.match(categoryObjective, /Duplicate name - LK02/);
+assert.match(categoryObjective, /Zone 1/);
+assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc', ownHangMuc: '' }), 'Tên công việc');
+assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc - LK02', ownHangMuc: 'LK02' }), 'Tên công việc - LK02');
+assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc  -  lk02', ownHangMuc: 'LK02' }), 'Tên công việc - lk02');
+assert.equal(objectiveRenderContext.qltdWeeklyDisplayTitle({ taskName: 'Tên công việc', ownHangMuc: '', parentMasterTaskCode: 'M-PARENT', hangMuc: 'PARENT' }), 'Tên công việc');
 
 const savedUpdatesSource = app.slice(app.indexOf('function renderWeeklySavedUpdates'), app.indexOf('function renderWeeklyNextItems'));
 const savedUpdatesContext = {
@@ -578,6 +584,10 @@ const weeklyExportContext = {
 };
 vm.createContext(weeklyExportContext);
 vm.runInContext([
+  extractFunction(app, 'qltdExactRowOwnZone'),
+  extractFunction(app, 'qltdExactRowOwnHangMuc'),
+  extractFunction(app, 'qltdNormalizeExactRowTitlePart'),
+  extractFunction(app, 'qltdExactRowDisplayTitle'),
   extractFunction(app, 'qltdWeeklyCategoryName'),
   extractFunction(app, 'qltdWeeklyDisplayTitle'),
   extractFunction(app, 'qltdWeeklyEnrichItemsForDisplay'),
@@ -613,11 +623,11 @@ const originalItems = JSON.stringify(exportItems);
 const originalUpdates = JSON.stringify(exportUpdates);
 const originalMasters = JSON.stringify(deptMasters);
 const categoryExportItems = weeklyExportContext.enrichItems([
-  { itemType: 'PB_DETAIL', itemId: 'D-CAT', parentMasterTaskCode: 'M-CAT', taskName: 'Detail', zone: 'Zone 1', hangMuc: 'LK02' }
-], [{ masterCode: 'M-CAT', taskName: 'Duplicate objective', hangMuc: 'LK02' }]);
+  { itemType: 'PB_DETAIL', itemId: 'D-CAT', parentMasterTaskCode: 'M-CAT', taskName: 'Detail', ownZone: 'Zone 1', ownHangMuc: 'LK02', zone: 'Inherited Zone', hangMuc: 'Inherited LK' }
+], [{ masterCode: 'M-CAT', taskName: 'Duplicate objective', ownHangMuc: 'PARENT' }]);
 assert.equal(categoryExportItems.find((item) => item.itemId === 'M-CAT').taskName, 'Duplicate objective');
 assert.equal(categoryExportItems.find((item) => item.itemId === 'M-CAT').hangMuc, undefined);
-assert.equal(categoryExportItems.find((item) => item.itemId === 'D-CAT').displayTitle, 'Detail — LK02');
+assert.equal(categoryExportItems.find((item) => item.itemId === 'D-CAT').displayTitle, 'Detail - LK02');
 const categoryExportRow = weeklyExportContext.buildExportModel(
   categoryExportItems,
   [],
@@ -626,7 +636,7 @@ const categoryExportRow = weeklyExportContext.buildExportModel(
 ).rows.find((row) => row.item.itemId === 'D-CAT');
 assert.equal(categoryExportRow.values[2], 'Zone 1');
 assert.equal(categoryExportRow.values[3], 'LK02');
-assert.equal(categoryExportRow.values[4], 'Detail — LK02');
+assert.equal(categoryExportRow.values[4], 'Detail - LK02');
 const enrichedItems = weeklyExportContext.enrichItems(exportItems, deptMasters);
 assert.equal(enrichedItems.filter((item) => item.itemType === 'MASTER' && item.itemId === 'M2').length, 1);
 assert.equal(enrichedItems.find((item) => item.itemId === 'M2').wbs, 'V.2');
@@ -932,6 +942,10 @@ vm.runInContext([
   extractFunction(app, 'qltdWeeklyTaskLog'),
   extractFunction(app, 'qltdWeeklyFetchTaskPayloadWithRetry'),
   extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
+  extractFunction(app, 'qltdExactRowOwnZone'),
+  extractFunction(app, 'qltdExactRowOwnHangMuc'),
+  extractFunction(app, 'qltdNormalizeExactRowTitlePart'),
+  extractFunction(app, 'qltdExactRowDisplayTitle'),
   extractFunction(app, 'qltdWeeklyCategoryName'),
   extractFunction(app, 'qltdWeeklyDisplayTitle'),
   extractFunction(app, 'qltdWeeklyEnrichItemsForDisplay'),
@@ -1390,10 +1404,11 @@ assert.match(resetDeptState, /qltdDeptMasterListExpanded = false/);
 assert.match(styles, /\.report-summary-section/);
 assert.match(styles, /\.report-master-row\.is-overdue/);
 assert.match(styles, /\.dept-plan-list-toggle/);
-assert.match(app, /function renderDeptObjectiveOwnCategory/);
-assert.match(app, /renderDeptObjectiveOwnCategory\(master\)/);
+assert.match(app, /function qltdExactRowDisplayTitle/);
 const deptSummaryTable = extractFunction(app, 'renderDeptPlanTab');
 assert.doesNotMatch(deptSummaryTable, /renderDeptObjectiveContext\(master, true\)|master\.contextName/);
-assert.match(deptSummaryTable, /master\.taskName/);
+assert.match(deptSummaryTable, /qltdExactRowDisplayTitle\(master\)/);
+assert.match(deptSummaryTable, /getDeptPlanMasterWbs\(master\).*qltdExactRowDisplayTitle\(master\)/s);
+assert.match(deptSummaryTable, /qltdExactRowDisplayTitle\(selectedMaster\)/);
 
 console.log('Report UX/request contract: PASS');

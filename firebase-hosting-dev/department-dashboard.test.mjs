@@ -9,7 +9,7 @@ const payloads = [
     projectName: 'Hung Loc',
     mainMilestoneIds: ['a', 'g'],
     data: [
-      { id: 'a', code: 'CV-A', masterTaskCode: 'CV-A', text: 'A', owner: 'Phong Phat trien du an', status: 'Dang thuc hien', start_date: '2026-06-01', end_date: '2026-06-17', wbs: 'V.1', raw: { 'Hang muc': 'Phap ly' } },
+      { id: 'a', code: 'CV-A', masterTaskCode: 'CV-A', text: 'A', ownZone: 'Zone 1', ownHangMuc: 'Phap ly', hangMuc: 'Inherited parent', owner: 'Phong Phat trien du an', status: 'Dang thuc hien', start_date: '2026-06-01', end_date: '2026-06-17', wbs: 'V.1', raw: { 'Hang muc': 'Raw fallback must be ignored' } },
       { id: 'b', text: 'B', owner: 'PTDA', status: 'Chua bat dau', start_date: '2026-06-18', end_date: '2026-06-25', wbs: 'VIII.1', raw: { COL_6: '' } },
       { id: 'e', text: 'E', owner: 'PTDA', status: 'Chua bat dau', start_date: '2026-06-01', end_date: '2026-06-16' },
       { id: 'f', text: 'F', owner: 'PTDA', status: 'Dang thuc hien', start_date: '2026-06-01', end_date: '2026-06-15' },
@@ -60,6 +60,7 @@ assert.equal(getProjectDeptKey(' 37-5.hl ', 'Thiet ke'), '37-5.HL::THIETKE');
 assert.equal(getProjectDeptKey('24-1.ĐB', 'QLDA'), '24-1.ĐB::BQLDA');
 assert.equal(getDepartmentTaskCategory(payloads[0].data[0]), 'Phap ly');
 assert.equal(getDepartmentTaskCategory(payloads[0].data[1]), '');
+assert.equal(getDepartmentTaskCategory({ hangMuc: 'Inherited parent', raw: { HANG_MUC: 'Raw parent' } }), '');
 
 const individualPayloads = [
   {
@@ -72,7 +73,7 @@ const individualPayloads = [
         masterCode: 'CV-A',
         taskName: 'Phap ly',
         details: [
-          { detailTaskId: 'hl-1', taskName: 'Viec Alice 1', owner: 'Alice Nguyen <alice@example.com>', status: 'Hoan thanh', progress: 100, planStart: '2026-06-01', planFinish: '2026-06-10', actualFinish: '2026-06-10' },
+          { detailTaskId: 'hl-1', taskName: 'Viec Alice 1', ownHangMuc: 'Phap ly', owner: 'Alice Nguyen <alice@example.com>', status: 'Hoan thanh', progress: 100, planStart: '2026-06-01', planFinish: '2026-06-10', actualFinish: '2026-06-10' },
           { detailTaskId: 'hl-2', taskName: 'Viec Alice 2', owner: 'Alice Nguyen <ALICE@example.com>', status: 'Dang thuc hien', progress: 50, planStart: '2026-06-01', planFinish: '2026-06-17' },
           { detailTaskId: 'hl-3', taskName: 'Owner cu', owner: 'Cuu Nhan Su <former@example.com>', status: 'Chua bat dau', progress: 0, planStart: '2026-06-01', planFinish: '2026-06-25' },
           { detailTaskId: 'hl-4', taskName: 'Chua giao', owner: '', status: '', progress: 0, planStart: '2026-06-01', planFinish: '2026-06-16' }

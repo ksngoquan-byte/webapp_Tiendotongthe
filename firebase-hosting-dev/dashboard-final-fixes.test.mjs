@@ -8,7 +8,7 @@ const dashboardStyles = fs.readFileSync(new URL('./dashboard_executive_v3.css', 
 
 assert.match(app, /getDepartmentOwnerPresentation\(task\.owner\)/);
 assert.match(app, /class="dept-owner-cell is-text" title="\$\{escapeHtml\(owner\.title\)\}">\$\{escapeHtml\(owner\.display\)\}/);
-assert.match(app, /PB_DASHBOARD_DEPT_MAPPING_3/);
+assert.match(app, /EXACT_ROW_ZONE_HANGMUC_V4/);
 assert.match(app, /model\.individualEmptyMessage/);
 assert.match(app, /Chưa có công việc được phân công cho cá nhân|individualEmptyMessage/);
 assert.match(dashboardStyles, /\.dept-owner-cell\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/);
