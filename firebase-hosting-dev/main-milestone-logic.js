@@ -4,8 +4,8 @@ function clean(value) {
 
 export function getMainMilestoneStableKey(task, projectCode) {
   const project = clean(projectCode);
-  const code = clean(task && (task.masterTaskCode || task.code));
-  return project && code ? `${project}|${code}` : '';
+  const uid = clean(task && (task.uid || task.taskId || task.itemId || task.id || task.refId));
+  return project && uid ? `${project}|UID:${uid}` : '';
 }
 
 function addToIndex(map, rawValue, task) {
@@ -25,7 +25,11 @@ export function buildMainMilestoneTaskIndex(tasks = [], projectCode = '') {
   (tasks || []).forEach((task) => {
     const stableKey = getMainMilestoneStableKey(task, projectCode);
     addToIndex(byStableKey, stableKey, task);
+    addToIndex(byId, task && task.uid, task);
+    addToIndex(byId, task && task.taskId, task);
+    addToIndex(byId, task && task.itemId, task);
     addToIndex(byId, task && task.id, task);
+    addToIndex(byId, task && task.refId, task);
     addToIndex(byMasterTaskCode, task && task.masterTaskCode, task);
     addToIndex(byCode, task && task.code, task);
   });
@@ -35,14 +39,22 @@ export function buildMainMilestoneTaskIndex(tasks = [], projectCode = '') {
 
 function uniqueMatches(rawKey, index) {
   const matches = [];
+  const lookupKeys = [rawKey];
+  const compositeIndex = rawKey.indexOf('|');
+  if (compositeIndex >= 0) {
+    const tail = rawKey.slice(compositeIndex + 1);
+    lookupKeys.push(tail.startsWith('UID:') ? tail.slice(4) : tail);
+  }
   [
     index.byStableKey,
     index.byId,
     index.byMasterTaskCode,
     index.byCode
   ].forEach((map) => {
-    (map.get(rawKey) || []).forEach((task) => {
-      if (!matches.includes(task)) matches.push(task);
+    lookupKeys.forEach((lookupKey) => {
+      (map.get(lookupKey) || []).forEach((task) => {
+        if (!matches.includes(task)) matches.push(task);
+      });
     });
   });
   return matches;
@@ -119,4 +131,57 @@ export function toggleMainMilestoneTaskKey(selectedKeys, task, projectCode) {
   if (selectedKeys.has(key)) selectedKeys.delete(key);
   else selectedKeys.add(key);
   return key;
+}
+
+export function normalizeMainMilestoneStructuralText(value) {
+  return clean(value).replace(/\s+/g, ' ').toLocaleLowerCase('vi-VN');
+}
+
+export function isAllowedMainMilestoneStructuralRow(task) {
+  const rowType = clean(task && task.rowType).toUpperCase();
+  if (!['ZONE_GROUP', 'STRUCTURAL_GROUP', 'SCHEDULED_GROUP'].includes(rowType)) return false;
+  const taskName = normalizeMainMilestoneStructuralText(task && (task.text || task.taskName || task.name));
+  const zone = normalizeMainMilestoneStructuralText(task && (task.congViecZone || task.ownZone));
+  const hangMuc = normalizeMainMilestoneStructuralText(task && (task.congViecHangMuc || task.ownHangMuc));
+  return !!taskName && ((!!zone && taskName === zone) || (!!hangMuc && taskName === hangMuc));
+}
+
+export function buildMainMilestoneFilteredView(allTasks = [], selectedTasks = []) {
+  const byId = new Map((allTasks || []).map((task) => [clean(task && task.id), task]));
+  const visibleById = new Map();
+
+  (selectedTasks || []).forEach((sourceTask) => {
+    const taskId = clean(sourceTask && sourceTask.id);
+    if (!taskId) return;
+
+    let parentId = clean(sourceTask.parent);
+    let structuralParent = null;
+    const visited = new Set([taskId]);
+    while (parentId && parentId !== '0' && !visited.has(parentId)) {
+      visited.add(parentId);
+      const candidate = byId.get(parentId);
+      if (!candidate) break;
+      if (isAllowedMainMilestoneStructuralRow(candidate)) {
+        structuralParent = candidate;
+        break;
+      }
+      parentId = clean(candidate.parent);
+    }
+
+    if (structuralParent) {
+      const structuralId = clean(structuralParent.id);
+      if (!visibleById.has(structuralId)) {
+        visibleById.set(structuralId, { ...structuralParent, parent: '0' });
+      }
+    }
+    visibleById.set(taskId, {
+      ...sourceTask,
+      parent: structuralParent ? clean(structuralParent.id) : '0'
+    });
+  });
+
+  return (allTasks || []).flatMap((task) => {
+    const visible = visibleById.get(clean(task && task.id));
+    return visible ? [visible] : [];
+  });
 }

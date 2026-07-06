@@ -1390,5 +1390,10 @@ assert.match(resetDeptState, /qltdDeptMasterListExpanded = false/);
 assert.match(styles, /\.report-summary-section/);
 assert.match(styles, /\.report-master-row\.is-overdue/);
 assert.match(styles, /\.dept-plan-list-toggle/);
+assert.match(app, /function renderDeptObjectiveOwnCategory/);
+assert.match(app, /renderDeptObjectiveOwnCategory\(master\)/);
+const deptSummaryTable = extractFunction(app, 'renderDeptPlanTab');
+assert.doesNotMatch(deptSummaryTable, /renderDeptObjectiveContext\(master, true\)|master\.contextName/);
+assert.match(deptSummaryTable, /master\.taskName/);
 
 console.log('Report UX/request contract: PASS');

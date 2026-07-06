@@ -315,10 +315,9 @@ test('ganttData fetch passes AbortController signal and auto-load is view scoped
 test('loader protects current project from stale success and stale error rendering', () => {
   const loaderSource = extractFunction(appSource, 'qltdWeb07LoadGanttDataForSelectedProject');
   assert.match(loaderSource, /const requestSeq = \+\+qltdGanttLoadRequestSeq/);
-  assert.equal(
-    (loaderSource.match(/!qltdWeb07IsCurrentGanttLoad\(projectCode, requestSeq\)/g) || []).length,
-    2,
-    'Both success and error paths must reject stale UI writes.'
+  assert.ok(
+    (loaderSource.match(/!qltdWeb07IsCurrentGanttLoad\(projectCode, requestSeq\)/g) || []).length >= 3,
+    'Success, milestone-await, and error paths must reject stale UI writes.'
   );
   assert.match(loaderSource, /return payload/);
   assert.match(loaderSource, /return null/);

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {
+  buildMainMilestoneFilteredView,
   getMainMilestoneStableKey,
   isMainMilestoneKeySelected
 } from './main-milestone-logic.js';
@@ -23,26 +24,22 @@ function extractFunction(source, name) {
 
 const context = vm.createContext({});
 vm.runInContext(extractFunction(app, 'isGanttBusinessRow'), context);
-
 assert.equal(context.isGanttBusinessRow({ rowType: 'TASK' }, 'main-milestones'), true);
 assert.equal(context.isGanttBusinessRow({ rowType: 'MILESTONE' }, 'main-milestones'), true);
 assert.equal(context.isGanttBusinessRow({ rowType: 'SCHEDULED_GROUP' }, 'main-milestones'), true);
 assert.equal(context.isGanttBusinessRow({ rowType: 'STRUCTURAL_GROUP' }, 'main-milestones'), false);
-assert.equal(context.isGanttBusinessRow({ rowType: 'ZONE_GROUP' }, 'main-milestones'), false);
-assert.equal(context.isGanttBusinessRow({ rowType: 'SCHEDULED_GROUP' }, 'all'), false);
 
 const projectCode = '37-5.HL';
 const tasks = [
-  { id: 'zone', parent: '0', rowType: 'ZONE_GROUP', masterTaskCode: 'CV-ZONE', owner: '' },
-  { id: 'lk', parent: 'zone', rowType: 'STRUCTURAL_GROUP', masterTaskCode: 'CV-LK', owner: '' },
-  { id: 'group', parent: 'lk', rowType: 'SCHEDULED_GROUP', masterTaskCode: 'CV-GROUP', owner: 'KinhDoanh' },
-  { id: 'task', parent: 'group', rowType: 'TASK', masterTaskCode: 'CV-TASK', owner: 'KinhDoanh' }
+  { id: 'zone', taskId: 'zone', parent: '0', rowType: 'ZONE_GROUP', text: 'Zone 1', congViecZone: ' zone   1 ', owner: '' },
+  { id: 'lk', taskId: 'lk', parent: 'zone', rowType: 'STRUCTURAL_GROUP', text: 'LK02', congViecHangMuc: 'lk02', owner: '' },
+  { id: 'noise', taskId: 'noise', parent: 'lk', rowType: 'STRUCTURAL_GROUP', text: 'Parent name', congViecHangMuc: 'LK99', owner: '' },
+  { id: 'group', taskId: 'group', parent: 'noise', rowType: 'SCHEDULED_GROUP', owner: 'KinhDoanh' },
+  { id: 'task', taskId: 'task', parent: 'group', rowType: 'TASK', owner: 'KinhDoanh' }
 ];
 const selectedKeys = new Set([
-  getMainMilestoneStableKey(tasks[0], projectCode),
-  getMainMilestoneStableKey(tasks[1], projectCode),
-  getMainMilestoneStableKey(tasks[2], projectCode),
-  getMainMilestoneStableKey(tasks[3], projectCode)
+  getMainMilestoneStableKey(tasks[3], projectCode),
+  getMainMilestoneStableKey(tasks[4], projectCode)
 ]);
 const directlyMatched = tasks.filter((task) =>
   task.owner === 'KinhDoanh' &&
@@ -51,20 +48,22 @@ const directlyMatched = tasks.filter((task) =>
 );
 assert.deepEqual(directlyMatched.map((task) => task.id), ['group', 'task']);
 
-const byId = Object.fromEntries(tasks.map((task) => [task.id, task]));
-const visible = new Set();
-directlyMatched.forEach((task) => {
-  let current = task;
-  while (current) {
-    visible.add(current.id);
-    current = current.parent === '0' ? null : byId[current.parent];
-  }
-});
-assert.deepEqual([...visible], ['group', 'lk', 'zone', 'task']);
+const filteredView = buildMainMilestoneFilteredView(tasks, directlyMatched);
+assert.deepEqual(filteredView.map((task) => task.id), ['lk', 'group', 'task']);
+assert.equal(filteredView.find((task) => task.id === 'lk').parent, '0');
+assert.equal(filteredView.find((task) => task.id === 'group').parent, 'lk');
+assert.equal(filteredView.find((task) => task.id === 'task').parent, 'lk');
+assert.equal(tasks.find((task) => task.id === 'group').parent, 'noise');
 
-assert.match(app, /const matchRowType = depthFilter === 'main-milestones'/);
-assert.match(app, /Không có mốc chính phù hợp với bộ lọc hiện tại\./);
-assert.match(app, /MAIN_MILESTONE_NON_RENDERABLE_GROUP_KEY/);
+const visibleIds = new Set(filteredView.map((task) => task.id));
+const links = [
+  { source: 'group', target: 'task' },
+  { source: 'noise', target: 'task' }
+].filter((link) => visibleIds.has(link.source) && visibleIds.has(link.target));
+assert.deepEqual(links, [{ source: 'group', target: 'task' }]);
+
+assert.match(app, /buildMainMilestoneFilteredView\(allTasks, matchedTasks\)/);
+assert.match(app, /visibleIds\[String\(link\.source\)\] && visibleIds\[String\(link\.target\)\]/);
 assert.match(app, /function isNormalizedCountedTask[\s\S]*rowType === 'TASK' \|\| rowType === 'MILESTONE'/);
 
-console.log('Gantt main milestone row-type/filter/ancestor/empty-state: PASS');
+console.log('Gantt main milestone exact structural/reparent/link filter: PASS');

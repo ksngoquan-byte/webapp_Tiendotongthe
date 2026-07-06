@@ -20,11 +20,12 @@ import {
   isExecutiveTaskOverdue
 } from './dashboard-overdue.js';
 import {
+  buildMainMilestoneFilteredView,
   getMainMilestoneStableKey,
   isMainMilestoneKeySelected,
   migrateMainMilestoneKeys,
   toggleMainMilestoneTaskKey
-} from './main-milestone-logic.js';
+} from './main-milestone-logic.js?v=WEEKLY_HANGMUC_MILESTONE_V3';
 import { buildDepartmentDashboardModel, getDepartmentOwnerPresentation, getDepartmentPerformancePresentation } from './department-dashboard.js?v=PB_DASHBOARD_DEPT_MAPPING_3';
 import { getMonthWeekPeriods } from './weekly-periods.js?v=STEP_3B2E4_ACTUAL_DATE_LIFECYCLE';
 import { createRegistrationGate } from './registration-gate.js?v=BUG7_EMPLOYEE_REGISTRATION_1';
@@ -105,6 +106,7 @@ let qltdMainMilestoneMigration = {
 };
 let qltdMainMilestoneSelectMode = false;
 let qltdMainMilestoneGanttClickEventId = null;
+let qltdMainMilestoneLoadRequestSeq = 0;
 let qltdDashboardMode = 'project';
 let qltdDashboardContextFilters = { zone: '', loaiCongTrinh: '', congTrinh: '', hangMuc: '' };
 let qltdDepartmentDashboardDeptCode = '';
@@ -4229,7 +4231,7 @@ function renderDeptPlanTab(payload, dept, masters, selectedMaster) {
       <div class="dept-plan-table-wrap"><table class="dept-plan-table report-master-table"><thead><tr><th>WBS</th><th>Mục tiêu/Công việc gốc</th><th>Bắt đầu KH</th><th>Kết thúc KH</th><th>Việc chi tiết</th><th>Tiến độ</th><th>Trạng thái</th></tr></thead><tbody>
         ${masterList.visible.map((master) => {
           const overdue = qltdDeptPlanIsOverdue(master, todayIso);
-          return `<tr data-master-select="${escapeHtml(master.masterCode || '')}" class="report-master-row ${overdue ? 'is-overdue' : ''}"><td class="mono">${escapeHtml(getDeptPlanMasterWbs(master))}</td><td><div class="task-title">${escapeHtml(master.taskName || '')}</div>${renderDeptObjectiveContext(master, true)}${master.contextName ? `<div class="task-context">${escapeHtml(master.contextName)}</div>` : ''}${renderMasterCompletionWarning(master, true)}</td><td>${escapeHtml(formatIsoDateVi(master.planStart || '') || '—')}</td><td>${escapeHtml(formatIsoDateVi(master.planFinish || '') || '—')}</td><td><button type="button" class="detail-count-button" data-detail-popup="${escapeHtml(master.masterCode || '')}">${renderMasterDetailCount(master)}</button></td><td>${escapeHtml(master.progress ?? 0)}%</td><td>${escapeHtml(master.status || 'Chưa cập nhật')}${overdue ? '<span class="dept-overdue-badge">Quá hạn</span>' : ''}</td></tr>`;
+          return `<tr data-master-select="${escapeHtml(master.masterCode || '')}" class="report-master-row ${overdue ? 'is-overdue' : ''}"><td class="mono">${escapeHtml(getDeptPlanMasterWbs(master))}</td><td><div class="task-title">${escapeHtml(master.taskName || '')}</div>${renderDeptObjectiveOwnCategory(master)}${renderMasterCompletionWarning(master, true)}</td><td>${escapeHtml(formatIsoDateVi(master.planStart || '') || '—')}</td><td>${escapeHtml(formatIsoDateVi(master.planFinish || '') || '—')}</td><td><button type="button" class="detail-count-button" data-detail-popup="${escapeHtml(master.masterCode || '')}">${renderMasterDetailCount(master)}</button></td><td>${escapeHtml(master.progress ?? 0)}%</td><td>${escapeHtml(master.status || 'Chưa cập nhật')}${overdue ? '<span class="dept-overdue-badge">Quá hạn</span>' : ''}</td></tr>`;
         }).join('')}
       </tbody></table></div>
       ${masterList.total > 5 ? `<div class="dept-plan-list-footer"><button type="button" class="dept-plan-list-toggle" data-dept-master-list-toggle aria-expanded="${qltdDeptMasterListExpanded}">${qltdDeptMasterListExpanded ? 'Thu gọn' : `Xem thêm ${masterList.remaining} mục tiêu`}</button></div>` : ''}
@@ -4437,6 +4439,11 @@ function getWeeklyEffectiveTaskState(item, saved) {
     actualStart: effectiveSaved?.actualStart || source.actualStart || '',
     actualFinish: effectiveSaved?.actualFinish || source.actualFinish || ''
   };
+}
+
+function renderDeptObjectiveOwnCategory(master) {
+  const hangMuc = String(master?.ownHangMuc || '').trim();
+  return hangMuc ? `<div class="task-context compact"><span class="web07-chip">[${escapeHtml(hangMuc)}]</span></div>` : '';
 }
 
 function qltdWeeklyCategoryName(item = {}) {
@@ -6258,6 +6265,7 @@ async function loadDashboardDataForSelectedProject(projectCode, options = {}) {
     if (requestSeq !== qltdDashboardLoadRequestSeq || qltdActiveView !== 'dashboard') return payload;
     qltdDashboardPayload = payload;
     await loadMainMilestonesForProject(code, payload);
+    if (requestSeq !== qltdDashboardLoadRequestSeq || qltdActiveView !== 'dashboard') return payload;
     renderDashboardFromGanttData(payload);
     return payload;
   } catch (error) {
@@ -6298,6 +6306,7 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
     qltdDashboardPayload = payload;
     if (qltdActiveView === 'report' && qltdDeptPlanPayload?.success) renderDeptPlans(qltdDeptPlanPayload);
     await loadMainMilestonesForProject(projectCode, payload);
+    if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return payload;
     if (qltdActiveView === 'dashboard') renderDashboardFromGanttData(payload);
     renderGanttPanel(payload);
     qltdGanttDirtyProjects.delete(projectCode);
@@ -7663,10 +7672,14 @@ function bindGanttToolbar(payload) {
   if (milestoneResetButton) {
     milestoneResetButton.onclick = async () => {
       if (!canResetMainMilestone()) return;
+      if (!window.confirm('Xóa toàn bộ mốc chính đã lưu của dự án này?')) return;
       const scroll = getGanttScrollState();
-      qltdMainMilestoneKeys = new Set();
-      qltdMainMilestoneOrphanKeys = new Set();
-      await resetMainMilestonesForProject(payload.projectCode || getStoredProjectCode());
+      const reset = await resetMainMilestonesForProject(
+        payload.projectCode || getStoredProjectCode(),
+        qltdGanttPayload,
+        { confirmed: true }
+      );
+      if (!reset) return;
       const depthFilter = document.getElementById('ganttDepthFilter');
       if (depthFilter && depthFilter.value === 'main-milestones') {
         depthFilter.value = 'all';
@@ -7714,20 +7727,27 @@ function applyGanttFilters() {
       matchSearch && matchOwner && matchZone && matchHangMuc && matchStatus && matchProgress && matchDepth;
   }) : allTasks.slice();
 
+  const filteredView = depthFilter === 'main-milestones'
+    ? buildMainMilestoneFilteredView(allTasks, matchedTasks)
+    : null;
   const visibleIds = {};
-  matchedTasks.forEach((task) => {
-    let current = task;
-    const guard = {};
-    while (current && !guard[String(current.id)]) {
-      visibleIds[String(current.id)] = true;
-      guard[String(current.id)] = true;
-      const parentId = String(current.parent || '0');
-      if (parentId === '0') break;
-      current = byId[parentId];
-    }
-  });
+  if (filteredView) {
+    filteredView.forEach((task) => { visibleIds[String(task.id)] = true; });
+  } else {
+    matchedTasks.forEach((task) => {
+      let current = task;
+      const guard = {};
+      while (current && !guard[String(current.id)]) {
+        visibleIds[String(current.id)] = true;
+        guard[String(current.id)] = true;
+        const parentId = String(current.parent || '0');
+        if (parentId === '0') break;
+        current = byId[parentId];
+      }
+    });
+  }
   const tasks = qltdRecalculateVisibleStructuralSummaries(
-    allTasks.filter((task) => visibleIds[String(task.id)]),
+    filteredView || allTasks.filter((task) => visibleIds[String(task.id)]),
     visibleIds
   );
   const links = qltdGanttShowLinks
@@ -9639,23 +9659,35 @@ function hasMainMilestoneApiSource(payload) {
     Object.prototype.hasOwnProperty.call(payload, 'mainMilestones');
 }
 
+function isCurrentMainMilestoneLoad(requestSeq, projectKey) {
+  return requestSeq === qltdMainMilestoneLoadRequestSeq &&
+    projectKey === qltdCurrentMainMilestoneProjectKey;
+}
+
 async function loadMainMilestonesForProject(projectCode, payload = qltdGanttPayload) {
   const projectKey = getMainMilestoneProjectKey(projectCode, payload);
   const aliases = getMainMilestoneProjectKeyAliases(projectCode, payload);
+  const requestSeq = ++qltdMainMilestoneLoadRequestSeq;
+  const projectChanged = projectKey !== qltdCurrentMainMilestoneProjectKey;
   qltdCurrentMainMilestoneProjectKey = projectKey;
   const payloadKeys = getMainMilestonesFromApiPayload(payload);
-  applyMainMilestoneMigration(
-    payloadKeys.length ? payloadKeys : readCachedMainMilestones(projectKey, payload),
-    payload && payload.data,
-    projectKey,
-    payloadKeys.length ? 'GANTT_PAYLOAD' : 'LOCAL_STORAGE'
-  );
+  const cachedKeys = readCachedMainMilestones(projectKey, payload);
+  const seedKeys = payloadKeys.length ? payloadKeys : cachedKeys;
+  if (projectChanged || seedKeys.length || (!qltdMainMilestoneKeys.size && !qltdMainMilestoneOrphanKeys.size)) {
+    applyMainMilestoneMigration(
+      seedKeys,
+      payload && payload.data,
+      projectKey,
+      payloadKeys.length ? 'GANTT_PAYLOAD' : 'LOCAL_STORAGE'
+    );
+  }
 
   try {
     const response = await fetchBackendJson('getMainMilestones', {
       projectCode: projectKey,
       email: currentUserProfile && currentUserProfile.email || ''
     });
+    if (!isCurrentMainMilestoneLoad(requestSeq, projectKey)) return;
     if (response && response.success !== false) {
       const backendKeys = getMainMilestonesFromApiPayload(response);
       const migration = applyMainMilestoneMigration(
@@ -9676,6 +9708,7 @@ async function loadMainMilestonesForProject(projectCode, payload = qltdGanttPayl
   }
 
   if (hasMainMilestoneApiSource(payload)) {
+    if (!isCurrentMainMilestoneLoad(requestSeq, projectKey)) return;
     const migration = applyMainMilestoneMigration(
       payloadKeys,
       payload && payload.data,
@@ -9697,6 +9730,7 @@ async function loadMainMilestonesForProject(projectCode, payload = qltdGanttPayl
 
     for (const alias of aliases) {
       const snapshot = await getDoc(getMainMilestoneDocRef(alias));
+      if (!isCurrentMainMilestoneLoad(requestSeq, projectKey)) return;
       if (snapshot.exists()) {
         matchedSnapshot = snapshot;
         matchedKey = alias;
@@ -9705,12 +9739,7 @@ async function loadMainMilestonesForProject(projectCode, payload = qltdGanttPayl
     }
 
     if (!matchedSnapshot) {
-      qltdMainMilestoneKeys = new Set();
-      qltdMainMilestoneOrphanKeys = new Set();
-      cacheMainMilestonesForProject(projectKey, payload);
-      console.log('[mainMilestone] projectKey', projectKey);
-      console.log('[mainMilestone] loaded ids', []);
-      console.log('[mainMilestone] role/canSelect', currentUserProfile && currentUserProfile.role, canSelectMainMilestone());
+      console.log('[mainMilestone] compatibility source has no snapshot; retaining current project state', projectKey);
       return;
     }
 
@@ -9743,14 +9772,21 @@ async function saveMainMilestonesForProject(
   options = {}
 ) {
   const projectKey = getMainMilestoneProjectKey(projectCode, payload);
+  if (!projectKey) return false;
+  const ids = Array.from(qltdMainMilestoneKeys);
+  const codes = Array.from(qltdMainMilestoneOrphanKeys);
+  if (!ids.length && !codes.length) {
+    if (!options.silent) alert('Không thể lưu danh sách mốc rỗng. Hãy dùng Reset mốc và xác nhận.');
+    return false;
+  }
   qltdCurrentMainMilestoneProjectKey = projectKey;
   cacheMainMilestonesForProject(projectKey, payload);
 
   try {
     const response = await fetchBackendJson('saveMainMilestones', {
       projectCode: projectKey,
-      ids: JSON.stringify(Array.from(qltdMainMilestoneKeys)),
-      codes: JSON.stringify(Array.from(qltdMainMilestoneOrphanKeys)),
+      ids: JSON.stringify(ids),
+      codes: JSON.stringify(codes),
       email: currentUserProfile && currentUserProfile.email || ''
     });
     if (response && response.success !== false) {
@@ -9759,86 +9795,82 @@ async function saveMainMilestonesForProject(
         orphan: qltdMainMilestoneOrphanKeys.size,
         migrated: Boolean(options.migrated)
       });
-      return;
+      return true;
     }
     console.error('Apps Script rejected main milestone save', response);
     if (!options.silent) {
       alert('Không lưu được mốc chính: ' + String(response && (response.message || response.error) || 'API_ERROR'));
     }
-    return;
+    return false;
   } catch (error) {
     console.warn('Apps Script main milestone save unavailable; trying Firestore compatibility source', error);
   }
 
   const ref = getMainMilestoneDocRef(projectKey);
-  if (!ref) return;
+  if (!ref) return false;
 
   try {
     const firestoreData = {
       projectCode: String(projectKey || ''),
-      keys: Array.from(qltdMainMilestoneKeys),
-      orphanKeys: Array.from(qltdMainMilestoneOrphanKeys),
-      milestoneIds: Array.from(qltdMainMilestoneKeys),
-      milestoneCodes: Array.from(qltdMainMilestoneOrphanKeys),
+      keys: ids,
+      orphanKeys: codes,
+      milestoneIds: ids,
+      milestoneCodes: codes,
       updatedBy: currentUserProfile && currentUserProfile.email || '',
       updatedAt: serverTimestamp()
     };
     if (options.migrated) firestoreData.migratedAt = serverTimestamp();
     await setDoc(ref, firestoreData, { merge: true });
+    return true;
   } catch (error) {
     console.error('Cannot save global main milestone ids', error);
     if (!options.silent) {
       alert('Không lưu được mốc chính dùng chung. Vui lòng kiểm tra quyền Firebase/Firestore.');
     }
+    return false;
   }
 }
 
-async function resetMainMilestonesForProject(projectCode = getStoredProjectCode(), payload = qltdGanttPayload) {
+async function resetMainMilestonesForProject(
+  projectCode = getStoredProjectCode(),
+  payload = qltdGanttPayload,
+  options = {}
+) {
+  if (!options.confirmed) return false;
   const projectKey = getMainMilestoneProjectKey(projectCode, payload);
-  qltdCurrentMainMilestoneProjectKey = projectKey;
-  qltdMainMilestoneKeys = new Set();
-  qltdMainMilestoneOrphanKeys = new Set();
-  qltdMainMilestoneMigration = {
-    rawCount: 0,
-    validCount: 0,
-    migratedCount: 0,
-    orphanCount: 0,
-    ambiguousCount: 0,
-    warnings: []
-  };
-  cacheMainMilestonesForProject(projectKey, payload);
+  if (!projectKey) return false;
 
   try {
     const response = await fetchBackendJson('resetMainMilestones', {
       projectCode: projectKey,
-      email: currentUserProfile && currentUserProfile.email || ''
+      email: currentUserProfile && currentUserProfile.email || '',
+      confirmed: '1'
     });
     if (response && response.success !== false) {
+      if (qltdCurrentMainMilestoneProjectKey !== projectKey) return true;
+      qltdMainMilestoneLoadRequestSeq += 1;
+      qltdCurrentMainMilestoneProjectKey = projectKey;
+      qltdMainMilestoneKeys = new Set();
+      qltdMainMilestoneOrphanKeys = new Set();
+      qltdMainMilestoneMigration = {
+        rawCount: 0,
+        validCount: 0,
+        migratedCount: 0,
+        orphanCount: 0,
+        ambiguousCount: 0,
+        warnings: []
+      };
+      cacheMainMilestonesForProject(projectKey, payload);
       console.log('[mainMilestone] reset through Apps Script API', projectKey);
-      return;
+      return true;
     }
     console.error('Apps Script rejected main milestone reset', response);
     alert('Không reset được mốc chính: ' + String(response && (response.message || response.error) || 'API_ERROR'));
-    return;
+    return false;
   } catch (error) {
-    console.warn('Apps Script main milestone reset unavailable; saving empty Firestore fallback', error);
-  }
-
-  const ref = getMainMilestoneDocRef(projectKey);
-  if (!ref) return;
-  try {
-    await setDoc(ref, {
-      projectCode: String(projectKey || ''),
-      keys: [],
-      orphanKeys: [],
-      milestoneIds: [],
-      milestoneCodes: [],
-      updatedBy: currentUserProfile && currentUserProfile.email || '',
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-  } catch (error) {
-    console.error('Cannot reset global main milestone ids', error);
+    console.error('Apps Script main milestone reset unavailable; current selection retained', error);
     alert('Không reset được mốc chính dùng chung.');
+    return false;
   }
 }
 
@@ -9901,17 +9933,34 @@ async function toggleMainMilestone(taskId) {
     qltdCurrentMainMilestoneProjectKey
   );
   if (!stableKey) {
-    alert('Công việc chưa có Mã công việc Master nên chưa thể chọn làm mốc chính.');
+    alert('Công việc chưa có UID ổn định nên chưa thể chọn làm mốc chính.');
     return;
   }
+  const projectKey = qltdCurrentMainMilestoneProjectKey;
+  const selectedKeys = qltdMainMilestoneKeys;
+  const wasSelected = selectedKeys.has(stableKey);
   toggleMainMilestoneTaskKey(
-    qltdMainMilestoneKeys,
+    selectedKeys,
     sourceTask,
-    qltdCurrentMainMilestoneProjectKey
+    projectKey
   );
-  qltdMainMilestoneMigration.validCount = qltdMainMilestoneKeys.size;
+  if (wasSelected && !selectedKeys.size && !qltdMainMilestoneOrphanKeys.size) {
+    selectedKeys.add(stableKey);
+    alert('Để xóa mốc cuối cùng, hãy dùng Reset mốc và xác nhận.');
+    return;
+  }
+  qltdMainMilestoneMigration.validCount = selectedKeys.size;
 
-  await saveMainMilestonesForProject(qltdGanttPayload && qltdGanttPayload.projectCode);
+  const saved = await saveMainMilestonesForProject(qltdGanttPayload && qltdGanttPayload.projectCode);
+  if (!saved) {
+    if (wasSelected) selectedKeys.add(stableKey);
+    else selectedKeys.delete(stableKey);
+    if (qltdMainMilestoneKeys === selectedKeys) {
+      qltdMainMilestoneMigration.validCount = selectedKeys.size;
+    }
+    return;
+  }
+  if (qltdCurrentMainMilestoneProjectKey !== projectKey || qltdMainMilestoneKeys !== selectedKeys) return;
   updateMainMilestoneToolbarState();
   renderDashboardFromGanttData(qltdGanttPayload);
 
