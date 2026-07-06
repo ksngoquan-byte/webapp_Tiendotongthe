@@ -140,7 +140,8 @@ const helpersSource = [
   extractFunction(appSource, 'qltdWeb07Delay'),
   extractFunction(appSource, 'qltdWeb07GetGanttBusyRetryDelay'),
   extractFunction(appSource, 'qltdWeb07FetchGanttPayload'),
-  extractFunction(appSource, 'qltdWeb07RequestGanttPayload')
+  extractFunction(appSource, 'qltdWeb07RequestGanttPayload'),
+  extractFunction(appSource, 'qltdWeb07RequestDashboardPayload')
 ].join('\n');
 
 const context = {
@@ -307,7 +308,8 @@ test('ganttData fetch passes AbortController signal and auto-load is view scoped
   const fetchSource = extractFunction(appSource, 'fetchBackendJson');
   assert.match(fetchSource, /signal: options\.signal/);
   const projectOptionsSource = extractFunction(appSource, 'renderProjectOptions');
-  assert.match(projectOptionsSource, /qltdActiveView === 'dashboard' \|\| qltdActiveView === 'gantt'/);
+  assert.match(projectOptionsSource, /qltdActiveView === 'dashboard'[\s\S]*loadDashboardDataForSelectedProject/);
+  assert.match(projectOptionsSource, /qltdActiveView === 'gantt'[\s\S]*loadGanttDataForSelectedProject/);
 });
 
 test('loader protects current project from stale success and stale error rendering', () => {
@@ -347,8 +349,11 @@ test('all frontend ganttData physical calls go through the shared coordinator', 
   assert.equal((appSource.match(/fetchBackendJson\s*\(\s*['"]ganttData['"]/g) || []).length, 0);
   assert.equal((appSource.match(/fetcher\s*\(\s*['"]ganttData['"]/g) || []).length, 1);
   const departmentSource = extractFunction(appSource, 'getDepartmentDashboardPayloads');
-  assert.match(departmentSource, /qltdWeb07RequestGanttPayload\(code/);
+  assert.match(departmentSource, /qltdWeb07RequestDashboardPayload\(code/);
   assert.doesNotMatch(departmentSource, /fetchBackendJson\s*\(/);
+  const dashboardRequestSource = extractFunction(appSource, 'qltdWeb07RequestDashboardPayload');
+  assert.match(dashboardRequestSource, /qltdWeb07GetOrCreateGanttRequest/);
+  assert.match(dashboardRequestSource, /dashboardSummary/);
 });
 
 test('department dashboard A/B/C uses the physical lane, preserves cache, and continues after error', async () => {

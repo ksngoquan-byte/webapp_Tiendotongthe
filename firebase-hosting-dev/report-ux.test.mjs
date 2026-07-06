@@ -495,6 +495,7 @@ const weeklyList = latestFunction('renderWeeklyTaskList', 'renderWeeklyTaskRow')
 assert.match(weeklyList, /Không có kết quả phù hợp với bộ lọc/);
 assert.match(weeklyList, /Không có công việc liên quan đến tuần này/);
 const objectiveRenderContext = {
+  normalizeSearchText: (value) => String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/Ä‘/g, 'd'),
   findWeeklySavedUpdate: () => null,
   getWeeklyEffectiveTaskState: (item) => ({ progress: item.progress || 0, status: item.status || 'Chưa bắt đầu' }),
   escapeHtml: (value) => String(value ?? ''),
@@ -504,16 +505,25 @@ const objectiveRenderContext = {
   qltdSelectedWeeklyItemKey: ''
 };
 vm.createContext(objectiveRenderContext);
-vm.runInContext(`${extractFunction(app, 'canUpdateWeeklyItem')}\n${extractFunction(app, 'renderWeeklyObjectiveList')}`, objectiveRenderContext);
+vm.runInContext([
+  extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
+  extractFunction(app, 'qltdWeeklyCategoryName'),
+  extractFunction(app, 'qltdWeeklyDisplayTitle'),
+  extractFunction(app, 'canUpdateWeeklyItem'),
+  extractFunction(app, 'renderWeeklyObjectiveList')
+].join('\n'), objectiveRenderContext);
 const readonlyObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ itemType: 'MASTER', itemId: 'M1', taskName: 'Mục tiêu', progress: 20 }], [], {}, {}, false);
 assert.match(readonlyObjective, /Chỉ xem/);
 assert.doesNotMatch(readonlyObjective, /data-weekly-select/);
 const editableObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ itemType: 'MASTER', itemId: 'M1', taskName: 'Mục tiêu', progress: 20 }], [], {}, {}, true);
 assert.match(editableObjective, /data-weekly-select="MASTER:M1"/);
+const categoryObjective = objectiveRenderContext.renderWeeklyObjectiveList([{ itemType: 'MASTER', itemId: 'M2', taskName: 'Duplicate name', hangMuc: 'LK02', progress: 20 }], [], {}, {}, true);
+assert.match(categoryObjective, /Duplicate name — LK02/);
 
 const savedUpdatesSource = app.slice(app.indexOf('function renderWeeklySavedUpdates'), app.indexOf('function renderWeeklyNextItems'));
 const savedUpdatesContext = {
   escapeHtml: (value) => String(value ?? ''),
+  qltdWeeklyDisplayTitle: (item) => item?.displayTitle || item?.taskName || item?.itemId || '',
   formatApprovalStatus: (value) => String(value || ''),
   formatWeeklyDateTime: (value) => String(value || ''),
   formatWeeklyCurrency: (value) => `${Number(value || 0).toLocaleString('vi-VN')} đ`
@@ -543,6 +553,7 @@ const weeklyExportStart = app.indexOf('const QLTD_WEEKLY_EXPORT_HEADERS');
 const weeklyExportEnd = app.indexOf('async function exportWeeklyReportExcel', weeklyExportStart);
 const weeklyExportSource = app.slice(weeklyExportStart, weeklyExportEnd);
 const weeklyExportContext = {
+  normalizeSearchText: (value) => String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/Ä‘/g, 'd'),
   normalizeWeeklyUpdateMatchValue: (value) => String(value || '').trim().toUpperCase(),
   getDeptPlanMasterWbs: (master) => String(master?.officialWbs || master?.stt || master?.wbs || '').trim(),
   getWeeklyEffectiveTaskState: (item, update) => ({
@@ -555,7 +566,14 @@ const weeklyExportContext = {
   formatApprovalStatus: (value, compact) => compact ? ({ PENDING: 'Chờ duyệt', APPROVED: 'Đã duyệt', REJECTED: 'Bị trả lại' }[value] || '') : value
 };
 vm.createContext(weeklyExportContext);
-vm.runInContext(`${weeklyExportSource}\nthis.enrichItems = qltdWeeklyEnrichExportItemsWithParentMasters; this.buildExportModel = qltdWeeklyBuildExportModel; this.styleReport = qltdWeeklyStyleReportSheet; this.naturalWbsCompare = qltdWeeklyNaturalWbsCompare; this.planGroupLabel = qltdWeeklyNextPlanGroupLabel; this.exportHeaders = QLTD_WEEKLY_EXPORT_HEADERS; this.nextExportHeaders = QLTD_WEEKLY_NEXT_EXPORT_HEADERS;`, weeklyExportContext);
+vm.runInContext([
+  extractFunction(app, 'qltdWeeklyCategoryName'),
+  extractFunction(app, 'qltdWeeklyDisplayTitle'),
+  extractFunction(app, 'qltdWeeklyBuildMasterMetaMap'),
+  extractFunction(app, 'qltdWeeklyEnrichItemsForDisplay'),
+  weeklyExportSource,
+  'this.enrichItems = qltdWeeklyEnrichExportItemsWithParentMasters; this.buildExportModel = qltdWeeklyBuildExportModel; this.styleReport = qltdWeeklyStyleReportSheet; this.naturalWbsCompare = qltdWeeklyNaturalWbsCompare; this.planGroupLabel = qltdWeeklyNextPlanGroupLabel; this.exportDateValue = qltdWeeklyExportDateValue; this.exportHeaders = QLTD_WEEKLY_EXPORT_HEADERS; this.nextExportHeaders = QLTD_WEEKLY_NEXT_EXPORT_HEADERS;'
+].join('\n'), weeklyExportContext);
 assert.ok(weeklyExportContext.naturalWbsCompare('V.2', 'V.10') < 0);
 assert.ok(weeklyExportContext.naturalWbsCompare('1.2', '1.11') < 0);
 const exportContext = { projectCode: 'P1', deptCode: 'D1', weekCode: 'WEEK-2026-06-22' };
@@ -584,6 +602,10 @@ const exportUpdates = [
 const originalItems = JSON.stringify(exportItems);
 const originalUpdates = JSON.stringify(exportUpdates);
 const originalMasters = JSON.stringify(deptMasters);
+const categoryExportItems = weeklyExportContext.enrichItems([
+  { itemType: 'PB_DETAIL', itemId: 'D-CAT', parentMasterTaskCode: 'M-CAT', taskName: 'Detail' }
+], [{ masterCode: 'M-CAT', taskName: 'Duplicate objective', hangMuc: 'LK02' }]);
+assert.equal(categoryExportItems.find((item) => item.itemId === 'M-CAT').displayTitle, 'Duplicate objective — LK02');
 const enrichedItems = weeklyExportContext.enrichItems(exportItems, deptMasters);
 assert.equal(enrichedItems.filter((item) => item.itemType === 'MASTER' && item.itemId === 'M2').length, 1);
 assert.equal(enrichedItems.find((item) => item.itemId === 'M2').wbs, 'V.2');
@@ -603,6 +625,22 @@ assert.equal(exportModel.rows.at(-1).orphan, true);
 assert.equal(exportModel.warnings.length, 1);
 assert.equal(Object.prototype.toString.call(exportModel.rows[1].values[5]), '[object Date]');
 assert.equal(exportModel.rows[1].values[5].toISOString().slice(0, 10), '2026-06-23');
+const dateCases = [
+  ['06/07/2026', '2026-07-06'],
+  ['07/06/2026', '2026-06-07'],
+  ['31/12/2026', '2026-12-31'],
+  ['01/02/2027', '2027-02-01'],
+  ['29/02/2028', '2028-02-29'],
+  ['2026-07-06', '2026-07-06']
+];
+dateCases.forEach(([input, expectedIso]) => {
+  const parsed = weeklyExportContext.exportDateValue(input);
+  assert.equal(Object.prototype.toString.call(parsed), '[object Date]');
+  assert.equal(parsed.toISOString().slice(0, 10), expectedIso);
+});
+assert.equal(weeklyExportContext.exportDateValue(''), '');
+assert.equal(weeklyExportContext.exportDateValue('31/02/2026'), '');
+assert.equal(weeklyExportContext.exportDateValue('06/31/2026'), '');
 assert.equal(JSON.stringify(exportItems), originalItems);
 assert.equal(JSON.stringify(exportUpdates), originalUpdates);
 assert.equal(JSON.stringify(deptMasters), originalMasters);
@@ -805,7 +843,9 @@ budgetPayloadContext.qltdWeeklyTaskView.budgetDrafts['TL-1'].dirty = false;
 assert.equal(budgetPayloadContext.buildBudgetUpdates('P1', 'PTDA', 'WEEK-1').updates.length, 0);
 
 const loader = latestFunction('loadWeeklyTaskData(', 'loadWeeklyTaskDataForCurrent');
-assert.equal((loader.match(/fetchBackendJson\(/g) || []).length, 2);
+const weeklyRetryLoader = extractFunction(app, 'qltdWeeklyFetchTaskPayloadWithRetry');
+assert.match(loader, /qltdWeeklyFetchTaskPayloadWithRetry/);
+assert.equal((weeklyRetryLoader.match(/fetchBackendJson\(/g) || []).length, 2);
 assert.match(loader, /itemsResult\.data \|\| itemsResult/);
 assert.match(loader, /updatesResult\.data \|\| updatesResult/);
 assert.doesNotMatch(loader, /nextResult|getNextWeeklyPeriod/);
@@ -816,10 +856,19 @@ assert.match(loader, /qltdWeeklyTaskInFlight\.set\(key, requestPromise\)/);
 assert.match(loader, /qltdWeeklyTaskInFlight\.delete\(key\)/);
 assert.match(loader, /filters\.force/);
 assert.doesNotMatch(loader, /search:|group:|ownership|statuses/);
-assert.equal((loader.match(/\{ auth: true \}/g) || []).length, 2);
+assert.equal((weeklyRetryLoader.match(/\{ auth: true \}/g) || []).length, 2);
 assert.match(loader, /accessDenied/);
+assert.match(loader, /qltdWeeklyTaskContextError/);
+assert.match(loader, /requestStillCurrent/);
+assert.match(weeklyRetryLoader, /QLTD_WEEKLY_TASK_RETRY_DELAYS_MS/);
 
 const weeklyLoaderContext = {
+  Date,
+  Promise,
+  setTimeout,
+  performance: { now: () => 0 },
+  console: { info() {}, warn() {} },
+  QLTD_WEEKLY_TASK_RETRY_DELAYS_MS: [0, 0],
   qltdWeeklyTaskCache: new Map(),
   qltdWeeklyTaskInFlight: new Map(),
   qltdWeeklyTaskCacheVersions: new Map(),
@@ -834,10 +883,15 @@ const weeklyLoaderContext = {
   renderWeeklyTaskRegion: () => { weeklyLoaderContext.renderCount += 1; },
   getBackendErrorMessage: (result, fallback) => result.message || fallback,
   isDeptAccessDenied: (result) => result?.code === 'ACCESS_DENIED',
+  normalizeSearchText: (value) => String(value || '').toLowerCase(),
   fetchBackendJson: async (action, params) => {
     weeklyLoaderContext.apiCalls.push({ action, params });
     if (weeklyLoaderContext.denied) return { success: false, code: 'ACCESS_DENIED', message: 'Không có quyền' };
     if (weeklyLoaderContext.failRefresh) return { success: false, code: 'TEMPORARY', message: 'Lỗi tạm thời' };
+    if (weeklyLoaderContext.failOnce && action === 'work_listweeklyitems') {
+      weeklyLoaderContext.failOnce = false;
+      return { success: false, code: 'TEMPORARY', message: 'Temporary failure' };
+    }
     if (action === 'work_listweeklyitems') return { success: true, data: { items: [{ itemType: 'PB_DETAIL', itemId: `${params.projectCode}-${params.deptCode}-${params.weekCode}` }], standaloneBudgetItems: [], capabilities: { canUpdate: true } } };
     return { success: true, data: { updates: [] } };
   }
@@ -848,11 +902,27 @@ vm.runInContext([
   extractFunction(app, 'cloneWeeklyTaskState'),
   extractFunction(app, 'getWeeklyTaskCacheVersion'),
   extractFunction(app, 'invalidateWeeklyTaskCacheKey'),
+  extractFunction(app, 'qltdWeeklyTaskAuthReady'),
+  extractFunction(app, 'qltdWeeklyTaskContextError'),
+  extractFunction(app, 'qltdWeeklyTaskErrorCode'),
+  extractFunction(app, 'qltdWeeklyTaskShouldRetry'),
+  extractFunction(app, 'qltdWeeklyTaskRetryDelay'),
+  extractFunction(app, 'qltdWeeklyTaskNowMs'),
+  extractFunction(app, 'qltdWeeklyTaskLog'),
+  extractFunction(app, 'qltdWeeklyFetchTaskPayloadWithRetry'),
+  extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
+  extractFunction(app, 'qltdWeeklyCategoryName'),
+  extractFunction(app, 'qltdWeeklyDisplayTitle'),
+  extractFunction(app, 'qltdWeeklyBuildMasterMetaMap'),
+  extractFunction(app, 'qltdWeeklyEnrichItemsForDisplay'),
   `async ${loader}`
 ].join('\n'), weeklyLoaderContext);
 const weeklyPayload = (projectCode) => ({ projectCode });
 const weeklyDept = (deptCode) => ({ deptCode });
 const weeklyPeriod = (weekId) => ({ weekId, weekStart: '2026-06-22', weekEnd: '2026-06-28' });
+await weeklyLoaderContext.loadWeeklyTaskData(weeklyPayload(''), weeklyDept('D1'), weeklyPeriod('W0'), []);
+assert.equal(weeklyLoaderContext.apiCalls.length, 0);
+assert.match(weeklyLoaderContext.qltdWeeklyTaskView.error, /dự án|du an|project/i);
 await weeklyLoaderContext.loadWeeklyTaskData(weeklyPayload('P1'), weeklyDept('D1'), weeklyPeriod('W1'), []);
 assert.deepEqual(weeklyLoaderContext.apiCalls.map((call) => call.action), ['work_listweeklyitems', 'weekly_taskupdates_get']);
 assert.equal(weeklyLoaderContext.qltdWeeklyTaskInFlight.size, 0);
@@ -870,6 +940,11 @@ assert.equal(weeklyLoaderContext.apiCalls.length, 10);
 await weeklyLoaderContext.loadWeeklyTaskData(weeklyPayload('P1'), weeklyDept('D1'), weeklyPeriod('W2'), []);
 assert.equal(weeklyLoaderContext.apiCalls.length, 10);
 assert.equal(weeklyLoaderContext.apiCalls.some((call) => 'search' in call.params || 'group' in call.params), false);
+weeklyLoaderContext.failOnce = true;
+const beforeRetryApiCalls = weeklyLoaderContext.apiCalls.length;
+await weeklyLoaderContext.loadWeeklyTaskData(weeklyPayload('P1'), weeklyDept('D1'), weeklyPeriod('W4'), []);
+assert.equal(weeklyLoaderContext.apiCalls.length, beforeRetryApiCalls + 4);
+assert.equal(weeklyLoaderContext.qltdWeeklyTaskView.items[0].itemId, 'P1-D1-W4');
 weeklyLoaderContext.denied = true;
 await weeklyLoaderContext.loadWeeklyTaskData(weeklyPayload('P1'), weeklyDept('D1'), weeklyPeriod('W1'), [], { force: true });
 assert.equal(weeklyLoaderContext.qltdWeeklyTaskView.accessDenied, true);
@@ -1163,7 +1238,8 @@ await ganttDirtyContext.markWeeklyGanttRefreshRequired('P2');
 assert.equal(ganttDirtyContext.loadCount, 1);
 const showViewSource = latestFunction('showWeb07View', 'bindWeb07Navigation');
 assert.match(showViewSource, /qltdGanttDirtyProjects\.has\(projectCode\)/);
-assert.match(showViewSource, /viewName === 'dashboard' \|\| viewName === 'gantt'/);
+assert.match(showViewSource, /viewName === 'dashboard'/);
+assert.match(showViewSource, /viewName === 'gantt'/);
 const ganttLoaderSource = app.slice(app.indexOf('async function qltdWeb07LoadGanttDataForSelectedProject'), app.indexOf('function renderDashboardLoading'));
 assert.match(ganttLoaderSource, /qltdGanttDirtyProjects\.delete\(projectCode\)/);
 assert.ok(ganttLoaderSource.indexOf('qltdGanttDirtyProjects.delete(projectCode)') < ganttLoaderSource.indexOf('} catch (error)'));
