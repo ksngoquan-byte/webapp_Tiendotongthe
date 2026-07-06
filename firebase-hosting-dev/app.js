@@ -26,7 +26,7 @@ import {
   migrateMainMilestoneKeys,
   toggleMainMilestoneTaskKey
 } from './main-milestone-logic.js?v=WEEKLY_HANGMUC_MILESTONE_V3';
-import { buildDepartmentDashboardModel, getDepartmentOwnerPresentation, getDepartmentPerformancePresentation } from './department-dashboard.js?v=EXACT_ROW_ZONE_HANGMUC_V4';
+import { buildDepartmentDashboardModel, getDepartmentOwnerPresentation, getDepartmentPerformancePresentation } from './department-dashboard.js?v=HANGMUC_DISPLAY_DASHBOARD_V5';
 import { getMonthWeekPeriods } from './weekly-periods.js?v=STEP_3B2E4_ACTUAL_DATE_LIFECYCLE';
 import { createRegistrationGate } from './registration-gate.js?v=BUG7_EMPLOYEE_REGISTRATION_1';
 
@@ -3570,8 +3570,10 @@ function enrichDeptPlanPayloadWithOfficialMasters(payload) {
         return {
           ...master,
           taskName: official.taskName || '',
-          ownZone: String(official.ownZone || '').trim(),
-          ownHangMuc: String(official.ownHangMuc || '').trim(),
+          congViecZone: String(official.congViecZone || official.ownZone || '').trim(),
+          congViecHangMuc: String(official.congViecHangMuc || official.ownHangMuc || '').trim(),
+          ownZone: String(official.ownZone || official.congViecZone || '').trim(),
+          ownHangMuc: String(official.ownHangMuc || official.congViecHangMuc || '').trim(),
           officialWbs: official.wbs || master.stt || '',
           planStart: official.baselineStart || official.start_date || master.planStart || '',
           planFinish: official.baselineEnd || official.end_date || official.deadline || master.planFinish || '',
@@ -4352,9 +4354,9 @@ function renderDetailStatusPopup(payload, dept, masterCode, result) {
   const master = (dept.masters || []).find((item) => item.masterCode === masterCode) || data.masterTask || {};
   const tasks = Array.isArray(data.detailTasks) ? data.detailTasks : [];
   const summary = buildDetailStatusSummary(tasks);
-  content.innerHTML = `<div class="detail-status-header"><div><span>Chi tiết công việc thuộc mục tiêu</span><h2 id="detailStatusTitle">${escapeHtml(getDeptPlanMasterWbs(master) ? `${getDeptPlanMasterWbs(master)} · ${master.taskName || ''}` : master.taskName || masterCode)}</h2><small>BĐ KH: ${escapeHtml(formatIsoDateVi(master.planStart) || '—')} · KT KH: ${escapeHtml(formatIsoDateVi(master.planFinish) || '—')}</small></div><button type="button" class="detail-status-close" data-detail-close aria-label="Đóng">×</button></div>
+  content.innerHTML = `<div class="detail-status-header"><div><span>Chi tiết công việc thuộc mục tiêu</span><h2 id="detailStatusTitle">${escapeHtml(getDeptPlanMasterWbs(master) ? `${getDeptPlanMasterWbs(master)} · ${qltdExactRowDisplayTitle(master)}` : qltdExactRowDisplayTitle(master) || masterCode)}</h2><small>BĐ KH: ${escapeHtml(formatIsoDateVi(master.planStart) || '—')} · KT KH: ${escapeHtml(formatIsoDateVi(master.planFinish) || '—')}</small></div><button type="button" class="detail-status-close" data-detail-close aria-label="Đóng">×</button></div>
     <div class="detail-status-summary"><div><span>Tổng số việc</span><strong>${summary.total}</strong></div><div><span>Đã hoàn thành</span><strong>${summary.completed}</strong></div><div><span>Đang thực hiện</span><strong>${summary.inProgress}</strong></div><div><span>Chưa bắt đầu</span><strong>${summary.notStarted}</strong></div><div><span>Quá hạn</span><strong>${summary.overdue}</strong></div><div><span>Tiến độ tổng hợp</span><strong>${summary.progress}%</strong></div><div><span>Ngân sách kế hoạch</span><strong>${formatWeeklyCurrency(summary.budgetPlan)}</strong></div><div><span>Ngân sách thực hiện</span><strong>${formatWeeklyCurrency(summary.budgetActual)}</strong></div></div>
-    ${tasks.length ? `<div class="detail-status-table-wrap"><table class="detail-status-table"><thead><tr><th>WBS</th><th>Công việc chi tiết</th><th>Chủ trì</th><th>BĐ KH</th><th>KT KH</th><th>Tiến độ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${tasks.map((task) => { const visual = getDetailTaskVisualState(task); return `<tr><td class="mono">${escapeHtml(task.wbs || '')}</td><td>${escapeHtml(task.taskName || '')}</td><td>${escapeHtml(task.owner || '—')}</td><td>${escapeHtml(formatIsoDateVi(task.planStart) || '—')}</td><td>${escapeHtml(formatIsoDateVi(task.planFinish) || '—')}</td><td>${escapeHtml(task.progress ?? 0)}%</td><td><span class="detail-status-badge is-${escapeHtml(visual.code)}">${escapeHtml(visual.label)}</span></td><td><div class="detail-status-actions"><button type="button" data-detail-view="${escapeHtml(masterCode)}">Xem</button><button type="button" class="primary" data-detail-update="${escapeHtml(task.detailTaskId || '')}">Chọn để cập nhật</button></div></td></tr>`; }).join('')}</tbody></table></div>` : '<p class="empty-state">Mục tiêu này chưa có việc chi tiết.</p>'}`;
+    ${tasks.length ? `<div class="detail-status-table-wrap"><table class="detail-status-table"><thead><tr><th>WBS</th><th>Công việc chi tiết</th><th>Chủ trì</th><th>BĐ KH</th><th>KT KH</th><th>Tiến độ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${tasks.map((task) => { const visual = getDetailTaskVisualState(task); return `<tr><td class="mono">${escapeHtml(task.wbs || '')}</td><td>${escapeHtml(qltdExactRowDisplayTitle(task))}</td><td>${escapeHtml(task.owner || '—')}</td><td>${escapeHtml(formatIsoDateVi(task.planStart) || '—')}</td><td>${escapeHtml(formatIsoDateVi(task.planFinish) || '—')}</td><td>${escapeHtml(task.progress ?? 0)}%</td><td><span class="detail-status-badge is-${escapeHtml(visual.code)}">${escapeHtml(visual.label)}</span></td><td><div class="detail-status-actions"><button type="button" data-detail-view="${escapeHtml(masterCode)}">Xem</button><button type="button" class="primary" data-detail-update="${escapeHtml(task.detailTaskId || '')}">Chọn để cập nhật</button></div></td></tr>`; }).join('')}</tbody></table></div>` : '<p class="empty-state">Mục tiêu này chưa có việc chi tiết.</p>'}`;
   content.querySelector('[data-detail-close]').onclick = closeDetailStatusPopup;
   content.querySelectorAll('[data-detail-view]').forEach((button) => { button.onclick = () => { qltdSelectedMasterCode = button.dataset.detailView || masterCode; qltdReportSubTab = 'plan'; closeDetailStatusPopup(); renderSelectedDeptPlan(); }; });
   content.querySelectorAll('[data-detail-update]').forEach((button) => {
@@ -4363,7 +4365,7 @@ function renderDetailStatusPopup(payload, dept, masterCode, result) {
       if (!task) return;
       const deptCode = dept.deptCode || dept.sheetName || '';
       const selectedWeek = qltdGetSelectedWeekPeriod();
-      qltdWeeklyForcedItem = { projectCode: payload.projectCode, deptCode, weekCode: selectedWeek.weekId, itemType: 'PB_DETAIL', itemId: task.detailTaskId, detailTaskId: task.detailTaskId, masterTaskCode: task.masterTaskCode || masterCode, parentMasterTaskCode: task.masterTaskCode || masterCode, wbs: task.wbs || '', taskName: task.taskName || '', planStart: task.planStart || '', planFinish: task.planFinish || '', actualStart: task.actualStart || '', actualFinish: task.actualFinish || '', progress: Number(task.progress || 0), status: task.status || '', owner: task.owner || '', plannedBudget: Number(task.budgetPlan || 0), actualBudget: Number(task.budgetActual || 0), hasBudget: Number(task.budgetPlan || 0) > 0 || Number(task.budgetActual || 0) > 0, hasDetails: false, progressReadonly: false, eligibleReason: 'PLANNED', eligible: true };
+      qltdWeeklyForcedItem = { projectCode: payload.projectCode, deptCode, weekCode: selectedWeek.weekId, itemType: 'PB_DETAIL', itemId: task.detailTaskId, detailTaskId: task.detailTaskId, masterTaskCode: task.masterTaskCode || masterCode, parentMasterTaskCode: task.masterTaskCode || masterCode, wbs: task.wbs || '', taskName: task.taskName || '', congViecZone: task.congViecZone || '', congViecHangMuc: task.congViecHangMuc || '', ownZone: task.ownZone || task.congViecZone || '', ownHangMuc: task.ownHangMuc || task.congViecHangMuc || '', planStart: task.planStart || '', planFinish: task.planFinish || '', actualStart: task.actualStart || '', actualFinish: task.actualFinish || '', progress: Number(task.progress || 0), status: task.status || '', owner: task.owner || '', plannedBudget: Number(task.budgetPlan || 0), actualBudget: Number(task.budgetActual || 0), hasBudget: Number(task.budgetPlan || 0) > 0 || Number(task.budgetActual || 0) > 0, hasDetails: false, progressReadonly: false, eligibleReason: 'PLANNED', eligible: true };
       invalidateWeeklyTaskCacheKey(getWeeklyTaskCacheKey(payload.projectCode, deptCode, selectedWeek.weekId));
       qltdSelectedWeeklyItemKey = `PB_DETAIL:${task.detailTaskId}`;
       qltdWeeklyEditingItemKey = qltdSelectedWeeklyItemKey;
@@ -4443,11 +4445,11 @@ function getWeeklyEffectiveTaskState(item, saved) {
 }
 
 function qltdExactRowOwnZone(item = {}) {
-  return String(item?.ownZone || '').trim();
+  return String(item?.ownZone || item?.congViecZone || '').trim();
 }
 
 function qltdExactRowOwnHangMuc(item = {}) {
-  return String(item?.ownHangMuc || '').trim();
+  return String(item?.ownHangMuc || item?.congViecHangMuc || '').trim();
 }
 
 function qltdNormalizeExactRowTitlePart(value) {
@@ -4458,7 +4460,9 @@ function qltdExactRowDisplayTitle(item = {}) {
   const base = String(item?.taskName || item?.itemName || item?.itemId || '').trim().replace(/\s+/g, ' ');
   const hangMuc = qltdExactRowOwnHangMuc(item).replace(/\s+/g, ' ');
   if (!base || !hangMuc) return base;
-  if (qltdNormalizeExactRowTitlePart(base).endsWith(qltdNormalizeExactRowTitlePart(hangMuc))) return base;
+  const normalizedBase = qltdNormalizeExactRowTitlePart(base);
+  const normalizedHangMuc = qltdNormalizeExactRowTitlePart(hangMuc);
+  if (normalizedBase === normalizedHangMuc || normalizedBase.endsWith(`-${normalizedHangMuc}`)) return base;
   return `${base} - ${hangMuc}`;
 }
 
@@ -6559,7 +6563,6 @@ function renderDashboardFromGanttData(payload) {
         ${renderExecutiveKpiCard('Chưa bắt đầu', model.kpis.notStarted, `${model.notStartedPercent}% tổng số`, 'gray')}
         ${renderExecutiveKpiCard('Quá hạn', model.kpis.overdue, `${model.overduePercent}% tổng số`, 'red')}
         ${renderExecutiveKpiCard('Mốc lớn đang thực hiện', model.kpis.activeMilestones, model.usedMilestoneFallback ? 'WBS cấp I/II/III' : 'Mốc lớn hệ thống', 'blue')}
-        ${model.kpis.unmappedContext > 0 ? renderExecutiveKpiCard('Chưa xác định Hạng mục', model.kpis.unmappedContext, 'Công việc chưa được gắn Hạng mục', 'red') : ''}
       </section>
 
       ${renderExecutiveAlerts(model.alerts)}
@@ -6795,7 +6798,6 @@ function buildExecutiveDashboardModel(payload, contextFilters = {}) {
   const inProgress = realTasks.filter((task) => !task.isCompleted && task.normalizedStatus === 'in-progress');
   const notStarted = realTasks.filter((task) => !task.isCompleted && task.normalizedStatus === 'not-started');
   const hasStrictMilestones = enriched.some((task) => task.isMilestone);
-  const unmappedContext = realTasks.filter((task) => !qltdExactRowOwnHangMuc(task));
   const milestoneTasks = dashboardTasks.filter((task) => task.isMilestone || (!hasStrictMilestones && task.isMilestoneFallback));
 
   const allOverdue = allOpenTasks
@@ -6835,12 +6837,6 @@ function buildExecutiveDashboardModel(payload, contextFilters = {}) {
   const lateMilestones = activeMilestones.filter((task) => task.lateDays > 0);
   const lateManagementTasks = overdue.filter((task) => task.wbsLevel <= 2);
   const alerts = [
-    ...(unmappedContext.length ? [{
-      tone: 'red',
-      taskId: unmappedContext[0].id,
-      title: 'Chưa xác định Hạng mục',
-      text: `${unmappedContext.length} công việc chưa được gắn Hạng mục`
-    }] : []),
     ...severeOverdue.map((task) => ({
       tone: 'red',
       taskId: task.id,
@@ -6878,8 +6874,7 @@ function buildExecutiveDashboardModel(payload, contextFilters = {}) {
       inProgress: inProgress.length,
       notStarted: notStarted.length,
       overdue: allOverdue.length,
-      activeMilestones: milestoneTasks.filter((task) => !task.isCompleted).length,
-      unmappedContext: unmappedContext.length
+      activeMilestones: milestoneTasks.filter((task) => !task.isCompleted).length
     },
     updatedAtLabel: getDashboardUpdatedAtLabel(payload),
     openTasks: openTasks.length,

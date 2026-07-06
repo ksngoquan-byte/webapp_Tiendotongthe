@@ -61,6 +61,7 @@ assert.equal(getProjectDeptKey('24-1.ĐB', 'QLDA'), '24-1.ĐB::BQLDA');
 assert.equal(getDepartmentTaskCategory(payloads[0].data[0]), 'Phap ly');
 assert.equal(getDepartmentTaskCategory(payloads[0].data[1]), '');
 assert.equal(getDepartmentTaskCategory({ hangMuc: 'Inherited parent', raw: { HANG_MUC: 'Raw parent' } }), '');
+assert.equal(getDepartmentTaskCategory({ congViecHangMuc: 'LK14', hangMuc: 'Inherited parent' }), 'LK14');
 
 const individualPayloads = [
   {

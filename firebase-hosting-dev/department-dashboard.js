@@ -248,10 +248,12 @@ function buildDetailPayloads(payloads, deptCode, registries = buildProjectDepart
             end_date: detail.planFinish || '',
             actualStart: detail.actualStart || '',
             actualFinish: detail.actualFinish || '',
-            ownZone: String(detail.ownZone || '').trim(),
-            ownHangMuc: String(detail.ownHangMuc || '').trim(),
-            zone: String(detail.ownZone || '').trim(),
-            hangMuc: String(detail.ownHangMuc || '').trim(),
+            congViecZone: String(detail.congViecZone || '').trim(),
+            congViecHangMuc: String(detail.congViecHangMuc || '').trim(),
+            ownZone: String(detail.ownZone || detail.congViecZone || '').trim(),
+            ownHangMuc: String(detail.ownHangMuc || detail.congViecHangMuc || '').trim(),
+            zone: String(detail.ownZone || detail.congViecZone || '').trim(),
+            hangMuc: String(detail.ownHangMuc || detail.congViecHangMuc || '').trim(),
             masterTaskCode: master.masterCode || '',
             forceRealTask: true,
             raw: detail
@@ -276,7 +278,7 @@ function isCategory(task) {
 }
 
 export function getDepartmentTaskCategory(task) {
-  return String(task && task.ownHangMuc || '').trim();
+  return String(task && (task.ownHangMuc || task.congViecHangMuc) || '').trim();
 }
 
 function enrichTask(task, payload, today, milestoneKeys, departmentRegistry) {

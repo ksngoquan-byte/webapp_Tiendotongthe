@@ -70,7 +70,7 @@ assert.equal(context.qltdWeb07GetTaskDisplayEnd({ ...scheduled, end_date: '2025-
 
 assert.doesNotMatch(app, /function getExecutiveTaskCategoryFromColF/);
 assert.match(app, /contextLabel: qltdExactRowOwnHangMuc\(item\)/);
-assert.match(app, /const unmappedContext = realTasks\.filter\(\(task\) => !qltdExactRowOwnHangMuc\(task\)\)/);
+assert.doesNotMatch(app, /const unmappedContext =/);
 assert.match(app, /\.filter\(\(field\) => field\.values\.length\)/);
 assert.doesNotMatch(app, /class="exec-context" title="\$\{escapeHtml\(task\.contextPath \|\| ''\)\}"/);
 assert.match(app, /function qltdDashboardTaskField[\s\S]*key === 'zone'[\s\S]*qltdExactRowOwnZone/);

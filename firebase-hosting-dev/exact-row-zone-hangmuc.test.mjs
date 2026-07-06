@@ -72,6 +72,7 @@ const enrichedDeptPlan = context.enrichDeptPlanPayloadWithOfficialMasters({
 assert.equal(enrichedDeptPlan.departments[0].masters[0].taskName, 'Tiến độ thi công');
 assert.equal(enrichedDeptPlan.departments[0].masters[0].ownZone, 'Zone 2');
 assert.equal(enrichedDeptPlan.departments[0].masters[0].ownHangMuc, 'LK14');
+assert.equal(enrichedDeptPlan.departments[0].masters[0].congViecHangMuc, 'LK14');
 
 assert.equal(
   context.qltdWeeklyDisplayTitle({
@@ -95,6 +96,21 @@ assert.equal(
     hangMuc: 'Inherited LK02'
   }),
   'Hoàn thành kết cấu phần thân'
+);
+assert.equal(
+  context.qltdWeeklyDisplayTitle({
+    taskName: 'MãXLK02',
+    ownHangMuc: 'LK02'
+  }),
+  'MãXLK02 - LK02'
+);
+assert.equal(
+  context.qltdWeeklyDisplayTitle({
+    taskName: 'Hoàn thành phần cọc',
+    congViecHangMuc: 'LK14',
+    hangMuc: 'Inherited LK05'
+  }),
+  'Hoàn thành phần cọc - LK14'
 );
 
 const master = {
