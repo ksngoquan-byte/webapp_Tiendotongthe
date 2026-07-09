@@ -5978,30 +5978,10 @@ function showWeeklyToast(message) {
 }
 
 async function postBackendJson(payload) {
-  let forceRefresh = false;
-
-  while (true) {
-    const requestPayload = { ...(payload || {}) };
-    if (auth && auth.currentUser) {
-      requestPayload.email = auth.currentUser.email || requestPayload.email || '';
-      requestPayload.idToken = await auth.currentUser.getIdToken(forceRefresh);
-    }
-
-    const response = await fetch(APPS_SCRIPT_DEV_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(requestPayload)
-    });
-    if (!response.ok) throw new Error(`Apps Script API POST failed: ${response.status}`);
-
-    const result = await response.json();
-    const message = String(result?.errorCode || result?.message || '').trim().toUpperCase();
-    if (forceRefresh === false && (message === 'ID_TOKEN_INVALID' || message === 'ID_TOKEN_EXPIRED')) {
-      forceRefresh = true;
-      continue;
-    }
-    return result;
-  }
+  const requestPayload = { ...(payload || {}) };
+  const action = String(requestPayload.action || '').trim();
+  delete requestPayload.action;
+  return requestBackendJson(action, requestPayload, { method: 'POST', auth: action !== 'health' });
 }
 
 function getNextWeeklyPeriod(week) { const start = new Date(`${week.weekStart}T12:00:00`); start.setDate(start.getDate() + 7); const end = new Date(start); end.setDate(end.getDate() + 6); const iso = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`; return { weekId: `WEEK-${iso(start)}`, weekStart: iso(start), weekEnd: iso(end) }; }
@@ -10107,37 +10087,149 @@ async function loadDeptPlansForSelectedProject(projectCode) {
   }
 }
 async function fetchBackendJson(action, params = {}, options = {}) {
+  return requestBackendJson(action, params, { ...options, method: 'GET' });
+}
+
+class QltdApiTransportError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'QltdApiTransportError';
+    Object.assign(this, details);
+  }
+}
+
+function qltdApiPayloadMessage(payload, fallback = '') {
+  const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+  const messages = errors.map((item) => String(item?.message || item?.code || '').trim()).filter(Boolean);
+  return messages.join(' \u00b7 ') || String(payload?.message || payload?.error || fallback || '').trim();
+}
+
+function qltdApiSafeResponsePreview(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+async function qltdParseBackendResponse(response, action) {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  const responseText = await response.text();
+  let payload = null;
+  let parseError = null;
+
+  try {
+    payload = JSON.parse(responseText);
+  } catch (error) {
+    parseError = error;
+  }
+
+  if (!response.ok) {
+    const backendMessage = payload && qltdApiPayloadMessage(payload);
+    const redirectedToHtml = response.redirected && (contentType.includes('text/html') || /^\s*<!doctype|^\s*<html/i.test(responseText));
+    const message = backendMessage || (redirectedToHtml
+      ? `Apps Script API ${action} trả về trang HTML sau redirect (HTTP ${response.status}).`
+      : `Apps Script API ${action} thất bại: HTTP ${response.status}.`);
+    throw new QltdApiTransportError(message, {
+      kind: redirectedToHtml ? 'deployment' : 'http',
+      status: response.status,
+      action,
+      contentType,
+      redirected: response.redirected,
+      responseUrl: response.url,
+      responsePreview: qltdApiSafeResponsePreview(responseText)
+    });
+  }
+
+  if (parseError || !payload || typeof payload !== 'object') {
+    const looksLikeHtml = contentType.includes('text/html') || /^\s*<!doctype|^\s*<html/i.test(responseText);
+    throw new QltdApiTransportError(
+      looksLikeHtml
+        ? `Apps Script API ${action} trả về HTML thay vì JSON. Vui lòng kiểm tra deployment.`
+        : `Apps Script API ${action} trả về dữ liệu không phải JSON.`,
+      {
+        kind: looksLikeHtml ? 'deployment' : 'json',
+        status: response.status,
+        action,
+        contentType,
+        redirected: response.redirected,
+        responseUrl: response.url,
+        responsePreview: qltdApiSafeResponsePreview(responseText)
+      }
+    );
+  }
+
+  return payload;
+}
+
+async function requestBackendJson(action, params = {}, options = {}) {
   const startedAt = performance.now();
   let forceRefresh = false;
   const includeAuth = options.auth !== false && action !== 'health';
+  const method = String(options.method || 'GET').trim().toUpperCase();
+
+  if (method !== 'GET' && method !== 'POST') {
+    throw new QltdApiTransportError(`Phương thức API không được hỗ trợ: ${method}.`, {
+      kind: 'configuration',
+      action,
+      method
+    });
+  }
 
   while (true) {
     const url = new URL(APPS_SCRIPT_DEV_URL);
-    url.searchParams.set('action', action);
-
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        url.searchParams.set(key, value);
-      }
-    });
-    if (qltdDevPerfEnabled()) url.searchParams.set('debugPerf', '1');
+    const requestPayload = { ...(params || {}) };
+    delete requestPayload.action;
+    delete requestPayload.idToken;
 
     if (includeAuth && auth && auth.currentUser) {
-      url.searchParams.set('email', auth.currentUser.email || url.searchParams.get('email') || '');
-      url.searchParams.set('idToken', await auth.currentUser.getIdToken(forceRefresh));
+      requestPayload.email = auth.currentUser.email || requestPayload.email || '';
+      requestPayload.idToken = await auth.currentUser.getIdToken(forceRefresh);
     }
 
-    const response = await fetch(url.toString(), {
-      method: 'GET',
+    const fetchOptions = {
+      method,
       cache: 'no-store',
+      redirect: 'follow',
       signal: options.signal
-    });
+    };
 
-    if (!response.ok) {
-      throw new Error(`Apps Script API ${action} failed: ${response.status}`);
+    if (method === 'GET') {
+      url.searchParams.set('action', action);
+      Object.entries(requestPayload).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) url.searchParams.set(key, value);
+      });
+      if (qltdDevPerfEnabled()) url.searchParams.set('debugPerf', '1');
+    } else {
+      fetchOptions.headers = { 'Content-Type': 'text/plain;charset=utf-8' };
+      fetchOptions.body = JSON.stringify({ action, ...requestPayload });
     }
 
-    const payload = await response.json();
+    let response;
+    try {
+      response = await fetch(url.toString(), fetchOptions);
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      throw new QltdApiTransportError(`Không thể kết nối Apps Script API cho ${action}.`, {
+        kind: 'network',
+        action,
+        cause: error
+      });
+    }
+
+    let payload;
+    try {
+      payload = await qltdParseBackendResponse(response, action);
+    } catch (error) {
+      if (error instanceof QltdApiTransportError) {
+        console.error('[QLTD API transport]', {
+          action: error.action,
+          kind: error.kind,
+          status: error.status,
+          contentType: error.contentType,
+          redirected: error.redirected,
+          responseUrl: error.responseUrl,
+          responsePreview: error.responsePreview
+        });
+      }
+      throw error;
+    }
     const message = String(payload?.errorCode || payload?.message || '').trim().toUpperCase();
     if (includeAuth && forceRefresh === false && (message === 'ID_TOKEN_INVALID' || message === 'ID_TOKEN_EXPIRED')) {
       forceRefresh = true;
@@ -10148,6 +10240,17 @@ async function fetchBackendJson(action, params = {}, options = {}) {
     return payload;
   }
 }
+
+window.__QLTD_API = Object.freeze({
+  baseUrl: APPS_SCRIPT_DEV_URL,
+  request: requestBackendJson,
+  get(action, params = {}, options = {}) {
+    return requestBackendJson(action, params, { ...options, method: 'GET' });
+  },
+  post(action, params = {}, options = {}) {
+    return requestBackendJson(action, params, { ...options, method: 'POST' });
+  }
+});
 
 async function fetchBackendProfile() {
   return fetchBackendJson('profile');

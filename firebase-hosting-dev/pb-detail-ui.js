@@ -1,5 +1,4 @@
-const QLTD_PB_DETAIL_UI_VERSION = 'STEP_3B2D_WEEKLY_FULLSCREEN';
-const QLTD_PB_DETAIL_API_URL = 'https://script.google.com/macros/s/AKfycbx6iHCEf6Ba05h6u6DiBcqv3kxV79T6RvktzoFsdBJXeQjBaCNMyGQL5akptlX8jGtxpg/exec';
+const QLTD_PB_DETAIL_UI_VERSION = 'PB_DETAIL_SHARED_API_V6';
 
 const qltdPbDetailState = {
   contextKey: '',
@@ -9,6 +8,7 @@ const qltdPbDetailState = {
   formMode: '',
   editingId: '',
   loading: false,
+  saving: false,
   requestSeq: 0,
   assigneeRequestSeq: 0,
   assigneeKey: '',
@@ -636,43 +636,27 @@ function qltdPbDetailRenderForm(context) {
 
       <div class="pb-detail-form-actions">
         <button type="button" class="pb-detail-button" data-pb-detail-action="cancel">Hủy</button>
-        <button type="button" class="pb-detail-button primary" data-pb-detail-action="save">${isEdit ? 'Lưu cập nhật' : 'Tạo việc chi tiết'}</button>
+        <button type="button" class="pb-detail-button primary" data-pb-detail-action="save" ${qltdPbDetailState.saving ? 'disabled' : ''}>${isEdit ? 'Lưu cập nhật' : 'Tạo việc chi tiết'}</button>
       </div>
     </form>
   `;
 }
 
 async function qltdPbDetailFetchGet(context) {
-  const authContext = await qltdPbDetailGetAuthContext();
-  const url = new URL(QLTD_PB_DETAIL_API_URL);
-  url.searchParams.set('action', 'work_getdetailtasks');
-  url.searchParams.set('email', authContext.email || context.email);
-  url.searchParams.set('idToken', authContext.idToken);
-  url.searchParams.set('projectCode', context.projectCode);
-  url.searchParams.set('deptCode', context.deptCode);
-  url.searchParams.set('masterTaskCode', context.masterTaskCode);
-
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    cache: 'no-store',
-    redirect: 'follow'
-  });
-
-  if (!response.ok) throw new Error(`GET PB_DETAIL thất bại: HTTP ${response.status}`);
-  return response.json();
+  return qltdPbDetailGetApiClient().get('work_getdetailtasks', {
+    email: context.email,
+    projectCode: context.projectCode,
+    deptCode: context.deptCode,
+    masterTaskCode: context.masterTaskCode
+  }, { auth: true });
 }
 
 async function qltdPbDetailFetchAssignees(context) {
-  const authContext = await qltdPbDetailGetAuthContext();
-  const url = new URL(QLTD_PB_DETAIL_API_URL);
-  url.searchParams.set('action', 'work_listassignees');
-  url.searchParams.set('email', authContext.email || context.email);
-  url.searchParams.set('idToken', authContext.idToken);
-  url.searchParams.set('projectCode', context.projectCode);
-  url.searchParams.set('deptCode', context.deptCode);
-  const response = await fetch(url.toString(), { method: 'GET', cache: 'no-store', redirect: 'follow' });
-  if (!response.ok) throw new Error(`GET assignee thất bại: HTTP ${response.status}`);
-  return response.json();
+  return qltdPbDetailGetApiClient().get('work_listassignees', {
+    email: context.email,
+    projectCode: context.projectCode,
+    deptCode: context.deptCode
+  }, { auth: true });
 }
 
 async function qltdPbDetailLoadAssignees(context, force = false) {
@@ -735,31 +719,19 @@ function qltdPbDetailCaptureFormDraft() {
   };
 }
 
-async function qltdPbDetailGetAuthContext(forceRefresh = false) {
-  if (typeof window.__qltdGetAuthContext !== 'function') {
-    throw new Error('Không lấy được phiên đăng nhập Firebase.');
+function qltdPbDetailGetApiClient() {
+  const api = window.__QLTD_API;
+  if (!api || typeof api.get !== 'function' || typeof api.post !== 'function') {
+    throw new Error('API client chung chưa sẵn sàng. Vui lòng tải lại trang.');
   }
-  return window.__qltdGetAuthContext(!!forceRefresh);
+  return api;
 }
 
-async function qltdPbDetailFetchPost(payload, forceRefresh = false) {
-  const authContext = await qltdPbDetailGetAuthContext(forceRefresh);
-  const response = await fetch(QLTD_PB_DETAIL_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain;charset=UTF-8'
-    },
-    body: JSON.stringify({
-      ...(payload || {}),
-      email: authContext.email || payload?.email || '',
-      idToken: authContext.idToken
-    }),
-    cache: 'no-store',
-    redirect: 'follow'
-  });
-
-  if (!response.ok) throw new Error(`POST PB_DETAIL thất bại: HTTP ${response.status}`);
-  return response.json();
+async function qltdPbDetailFetchPost(payload) {
+  const requestPayload = { ...(payload || {}) };
+  const action = String(requestPayload.action || '').trim();
+  delete requestPayload.action;
+  return qltdPbDetailGetApiClient().post(action, requestPayload, { auth: true });
 }
 
 function qltdPbDetailExtractError(payload) {
@@ -883,7 +855,7 @@ function qltdPbDetailReadFormPayload(context, isEdit) {
 
 async function qltdPbDetailSave() {
   const context = qltdPbDetailGetContext();
-  if (!context.canWrite) return;
+  if (!context.canWrite || qltdPbDetailState.saving) return;
 
   const isEdit = qltdPbDetailState.formMode === 'edit';
   let payload;
@@ -905,6 +877,7 @@ async function qltdPbDetailSave() {
     payload.masterTaskCode = context.masterTaskCode;
   }
 
+  qltdPbDetailState.saving = true;
   qltdPbDetailState.loading = true;
   qltdPbDetailState.message = isEdit ? 'Đang cập nhật việc chi tiết...' : 'Đang tạo việc chi tiết...';
   qltdPbDetailState.messageType = 'info';
@@ -921,6 +894,7 @@ async function qltdPbDetailSave() {
     qltdPbDetailState.message = `${isEdit ? 'Đã cập nhật' : 'Đã tạo'} việc chi tiết ${detailTaskId}.`;
     qltdPbDetailState.messageType = 'success';
     qltdPbDetailState.masterTask = null;
+    qltdPbDetailState.saving = false;
     qltdPbDetailState.loading = false;
     await qltdPbDetailLoad(true);
     qltdPbDetailState.message = `${isEdit ? 'Đã cập nhật' : 'Đã tạo'} việc chi tiết ${detailTaskId}.`;
@@ -935,6 +909,7 @@ async function qltdPbDetailSave() {
       }
     }));
   } catch (error) {
+    qltdPbDetailState.saving = false;
     qltdPbDetailState.loading = false;
     qltdPbDetailState.message = error.message || String(error);
     qltdPbDetailState.messageType = 'error';

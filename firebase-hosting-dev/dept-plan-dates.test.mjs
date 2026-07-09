@@ -131,6 +131,7 @@ assert.equal((pbRowsSource.match(/<td(?:\s|>)/g) || []).length, (pbTableHeaderSo
 assert.match(pbUiSource, /data-pb-detail-action="edit"/);
 assert.match(pbUiSource, /\+ Thêm việc chi tiết/);
 assert.match(pbUiSource, /vượt ngày kết thúc việc cha/);
-assert.match(pbUiSource, /idToken:\s*authContext\.idToken/);
+assert.match(pbUiSource, /window\.__QLTD_API/);
+assert.doesNotMatch(pbUiSource, /QLTD_PB_DETAIL_API_URL|idToken|script\.google\.com\/macros\/s/);
 
 console.log('PB_DETAIL date and parent finish tests: PASS');

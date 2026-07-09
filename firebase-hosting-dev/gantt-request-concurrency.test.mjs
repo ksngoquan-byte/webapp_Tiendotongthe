@@ -305,7 +305,7 @@ test('GANTT_BUSY_RETRY stops at the bounded maximum', async () => {
 });
 
 test('ganttData fetch passes AbortController signal and auto-load is view scoped', () => {
-  const fetchSource = extractFunction(appSource, 'fetchBackendJson');
+  const fetchSource = extractFunction(appSource, 'requestBackendJson');
   assert.match(fetchSource, /signal: options\.signal/);
   const projectOptionsSource = extractFunction(appSource, 'renderProjectOptions');
   assert.match(projectOptionsSource, /qltdActiveView === 'dashboard'[\s\S]*loadDashboardDataForSelectedProject/);

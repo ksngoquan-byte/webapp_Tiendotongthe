@@ -192,10 +192,11 @@ assert.match(appSource, /onRegistered:\s*resumeAuthenticatedAppAfterRegistration
 assert.doesNotMatch(appSource, /user_getregistrationoptions|GUEST_VIEWER/);
 assert.match(appSource, /code === 'USER_NOT_FOUND' \|\| profile\.requiresRegistration === true/);
 assert.match(appSource, /registrationGate\?\.show\(user\)/);
-assert.match(extractFunction(appSource, 'fetchBackendJson'), /const includeAuth = options\.auth !== false && action !== 'health'/);
-assert.match(extractFunction(appSource, 'fetchBackendJson'), /getIdToken\(forceRefresh\)/);
-assert.match(extractFunction(appSource, 'fetchBackendJson'), /ID_TOKEN_INVALID/);
-assert.match(extractFunction(appSource, 'postBackendJson'), /getIdToken\(forceRefresh\)/);
+assert.match(extractFunction(appSource, 'fetchBackendJson'), /requestBackendJson/);
+assert.match(extractFunction(appSource, 'postBackendJson'), /requestBackendJson/);
+assert.match(extractFunction(appSource, 'requestBackendJson'), /const includeAuth = options\.auth !== false && action !== 'health'/);
+assert.match(extractFunction(appSource, 'requestBackendJson'), /getIdToken\(forceRefresh\)/);
+assert.match(extractFunction(appSource, 'requestBackendJson'), /ID_TOKEN_INVALID/);
 assert.match(extractFunction(appSource, 'loadProjectsForSelector'), /fetchBackendJson\('listProjects',[\s\S]*\{ auth: true \}/);
 assert.match(extractFunction(appSource, 'renderApp'), /showWeb07View\('dashboard'\)/);
 assert.match(extractFunction(appSource, 'renderApp'), /loadProjectsForSelector\(\)/);
