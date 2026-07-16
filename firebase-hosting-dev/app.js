@@ -27,7 +27,7 @@ import {
 } from './main-milestone-logic.js';
 import { buildDepartmentDashboardModel, getDepartmentOwnerPresentation, getDepartmentPerformancePresentation } from './department-dashboard.js?v=PB_DASHBOARD_DEPT_MAPPING_3';
 import { getMonthWeekPeriods } from './weekly-periods.js?v=STEP_3B2E4_ACTUAL_DATE_LIFECYCLE';
-import { createRegistrationGate } from './registration-gate.js?v=BUG7_EMPLOYEE_REGISTRATION_1';
+import { createRegistrationGate } from './registration-gate.js?v=AUTH_REGISTRATION_V4';
 
 window.__QLTD_GANTT_PATCH_ROUND__ = 'GANTT_REQUEST_RACE_HOTFIX_3';
 
@@ -5766,7 +5766,7 @@ async function postBackendJson(payload) {
     if (!response.ok) throw new Error(`Apps Script API POST failed: ${response.status}`);
 
     const result = await response.json();
-    const message = String(result?.errorCode || result?.message || '').trim().toUpperCase();
+    const message = String(result?.error?.code || result?.errorCode || result?.message || '').trim().toUpperCase();
     if (forceRefresh === false && (message === 'ID_TOKEN_INVALID' || message === 'ID_TOKEN_EXPIRED')) {
       forceRefresh = true;
       continue;
@@ -9813,7 +9813,7 @@ async function fetchBackendJson(action, params = {}, options = {}) {
     }
 
     const payload = await response.json();
-    const message = String(payload?.errorCode || payload?.message || '').trim().toUpperCase();
+    const message = String(payload?.error?.code || payload?.errorCode || payload?.message || '').trim().toUpperCase();
     if (includeAuth && forceRefresh === false && (message === 'ID_TOKEN_INVALID' || message === 'ID_TOKEN_EXPIRED')) {
       forceRefresh = true;
       continue;
@@ -9859,7 +9859,7 @@ function renderApp(user, role, profile = {}) {
 }
 
 function getProfileErrorCode(payload) {
-  return String(payload?.errorCode || payload?.message || '').trim().toUpperCase();
+  return String(payload?.error?.code || payload?.errorCode || payload?.message || '').trim().toUpperCase();
 }
 
 function isValidAppProfile(profile) {
@@ -9881,12 +9881,16 @@ async function bootstrapAuthenticatedUser(user) {
 
     if (!profile.success) {
       const code = getProfileErrorCode(profile);
-      if (code === 'USER_NOT_FOUND' || profile.requiresRegistration === true) {
+      if ((code === 'USER_NOT_REGISTERED' || code === 'USER_NOT_FOUND') && profile.requiresRegistration === true) {
         registrationGate?.show(user);
         return;
       }
-      if (code === 'USER_INACTIVE') {
+      if (code === 'USER_INACTIVE' || code === 'USER_DISABLED') {
         renderDenied(user, 'Tài khoản đang bị khóa. Vui lòng liên hệ quản trị.');
+        return;
+      }
+      if (code === 'USER_DUPLICATE') {
+        renderDenied(user, 'Dữ liệu tài khoản bị trùng. Vui lòng liên hệ quản trị.');
         return;
       }
       if (code === 'INVALID_ROLE') {

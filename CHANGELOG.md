@@ -4,6 +4,8 @@
 
 ### Added
 
+- Luồng đăng ký có kiểm soát từ `USERS_SOFTWARE`, liên kết duy nhất theo `EmpCode` và chống ghi trùng bằng script lock.
+- Regression test cho xác minh Firebase ID token, chuẩn hóa tên tiếng Việt, dữ liệu trùng/không hoạt động và đăng ký idempotent.
 - Delegated `UPDATE_PROGRESS` theo `Email + ProjectCode + DeptCode` với kiểm tra backend fail-closed.
 - Schema check và dry-run cho `User_Project_Dept_Access`; chưa apply Central Data live.
 - Scope đọc/ghi BQLDA dự án `37-5.HL1` cho tài khoản được ủy quyền, không đổi phòng ban gốc.
@@ -13,6 +15,8 @@
 
 ### Security
 
+- Role, Phòng/Ban và tên hiển thị khi tự đăng ký được suy ra hoàn toàn từ nguồn nhân sự; payload client không còn quyết định quyền.
+- Tra cứu tài khoản và nhân sự fail-closed khi trùng dữ liệu, sai cấu hình hoặc thiếu sheet; lỗi API dùng mã ổn định và không trả chi tiết nội bộ.
 - Email client được ghi đè bằng identity đã xác minh từ Firebase ID token trước kiểm tra quyền.
 - Delegated payload có trường ngoài whitelist bị từ chối toàn bộ bằng `DELEGATED_PROGRESS_FIELDS_FORBIDDEN`.
 - Delegated weekly update không đọc/ghi hoặc hiển thị dữ liệu ngân sách.

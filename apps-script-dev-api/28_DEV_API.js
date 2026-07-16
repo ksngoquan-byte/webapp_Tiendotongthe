@@ -390,45 +390,9 @@ function qltdDevApiIsActionRequest(e) {
 }
 
 function qltdDevApiProfile_(params) {
-  const identity = qltdFirebaseResolveIdentity_(params, true);
-  if (!identity.success) {
-    return qltdDevApiJson_(identity);
-  }
-
-  const email = qltdDevApiNormalizeEmail_(identity.email || (params && params.email));
-
-  qltdUsersEnsureSheet_();
-  qltdUsersSeedAdminIfMissing_();
-
-  const user = qltdUsersGetByEmail_(email);
-
-  if (!user) {
-    return qltdDevApiJson_({
-      success: false,
-      message: 'USER_NOT_FOUND',
-      requiresRegistration: true,
-      apiStatus: 'CONNECTED',
-      source: QLTD_DEV_API_SOURCE
-    });
-  }
-
-  if (!qltdUsersIsValidStatus_(user.status) || user.status !== 'ACTIVE') {
-    return qltdDevApiJson_({
-      success: false,
-      message: 'USER_INACTIVE',
-      apiStatus: 'CONNECTED',
-      source: QLTD_DEV_API_SOURCE
-    });
-  }
-
-  if (!qltdUsersIsValidRole_(user.role)) {
-    return qltdDevApiJson_({
-      success: false,
-      message: 'INVALID_ROLE',
-      apiStatus: 'CONNECTED',
-      source: QLTD_DEV_API_SOURCE
-    });
-  }
+  const resolution = resolveCurrentUser_(params);
+  if (!resolution.success) return qltdDevApiJson_(resolution);
+  const user = resolution.user;
 
   qltdUsersTouchLastLogin_(user.rowIndex);
 
@@ -463,21 +427,9 @@ function qltdDevApiJson_(payload) {
 
 
 function qltdDevApiListProjects_(params) {
-  const identity = qltdFirebaseResolveIdentity_(params, true);
-  if (!identity.success) return qltdDevApiJson_(identity);
-
-  const user = qltdUsersGetByEmail_(identity.email);
-  if (!user) {
-    return qltdDevApiJson_(qltdUsersBuildAuthError_('USER_NOT_FOUND', 'Tai khoan chua duoc dang ky tren he thong.', {
-      requiresRegistration: true
-    }));
-  }
-  if (user.status !== 'ACTIVE') {
-    return qltdDevApiJson_(qltdUsersBuildAuthError_('USER_INACTIVE', 'Tai khoan dang bi khoa.'));
-  }
-  if (!qltdUsersIsValidRole_(user.role)) {
-    return qltdDevApiJson_(qltdUsersBuildAuthError_('INVALID_ROLE', 'Vai tro tai khoan khong hop le.'));
-  }
+  const resolution = resolveCurrentUser_(params);
+  if (!resolution.success) return qltdDevApiJson_(resolution);
+  const user = resolution.user;
 
   qltdProjectsEnsureSheet_();
   qltdProjectsSeedDefaultIfMissing_();

@@ -12,6 +12,7 @@ const indexSource = fs.readFileSync(new URL('./index.html', import.meta.url), 'u
 const gateSource = fs.readFileSync(new URL('./registration-gate.js', import.meta.url), 'utf8');
 const apiSource = fs.readFileSync(new URL('../apps-script-dev-api/28_DEV_API.js', import.meta.url), 'utf8');
 const usersSource = fs.readFileSync(new URL('../apps-script-dev-api/29_USERS_SERVICE.js', import.meta.url), 'utf8');
+const employeeRegistrationSource = fs.readFileSync(new URL('../apps-script-dev-api/74_EMPLOYEE_REGISTRATION_SERVICE.js', import.meta.url), 'utf8');
 const projectsSource = fs.readFileSync(new URL('../apps-script-dev-api/31_PROJECTS_SERVICE.js', import.meta.url), 'utf8');
 const scopeSource = fs.readFileSync(new URL('../apps-script-dev-api/37_SELF_REGISTRATION_SCOPE.js', import.meta.url), 'utf8');
 const firebaseConfig = JSON.parse(fs.readFileSync(new URL('./firebase.json', import.meta.url), 'utf8'));
@@ -64,22 +65,22 @@ assert.equal(projectContext.qltdProjectsListForUser_('invalid@example.com').leng
 assert.doesNotMatch(extractFunction(projectsSource, 'qltdProjectsListForUser_'), /ProjectDepts|AllowedProjectCodes/);
 
 assert.match(apiSource, /if \(action === 'listprojects'\) \{\s*return qltdDevApiListProjects_\(params\)/);
-assert.match(extractFunction(apiSource, 'qltdDevApiListProjects_'), /qltdFirebaseResolveIdentity_\(params, true\)/);
-assert.match(extractFunction(apiSource, 'qltdDevApiListProjects_'), /USER_INACTIVE/);
-assert.match(extractFunction(apiSource, 'qltdDevApiListProjects_'), /INVALID_ROLE/);
+assert.match(extractFunction(apiSource, 'qltdDevApiListProjects_'), /resolveCurrentUser_\(params\)/);
+assert.match(extractFunction(usersSource, 'resolveCurrentUser_'), /USER_INACTIVE/);
+assert.match(extractFunction(usersSource, 'resolveCurrentUser_'), /INVALID_ROLE/);
 
-assert.match(usersSource, /BAN_LANH_DAO:\s*'PMO'/);
-assert.match(usersSource, /DEPT_MANAGER:\s*'EDITOR'/);
-assert.match(usersSource, /EMPLOYEE:\s*'REPORTER'/);
-assert.doesNotMatch(extractFunction(usersSource, 'qltdUsersRegister_'), /payload\s*&&\s*payload\.role/);
-assert.match(extractFunction(usersSource, 'qltdUsersRegister_'), /LockService\.getScriptLock/);
-assert.match(extractFunction(usersSource, 'qltdUsersRegister_'), /if \(existing\)/);
+assert.match(employeeRegistrationSource, /function qltdEmployeesRoleFor_/);
+assert.doesNotMatch(extractFunction(employeeRegistrationSource, 'registerUserFromEmployee_'), /payload\s*&&\s*payload\.(?:role|deptCode)/);
+assert.match(extractFunction(employeeRegistrationSource, 'registerUserFromEmployee_'), /LockService\.getScriptLock/);
+assert.match(extractFunction(employeeRegistrationSource, 'validateEmployeeRegistration_'), /qltdUsersFindAllByEmail_/);
+assert.match(extractFunction(employeeRegistrationSource, 'validateEmployeeRegistration_'), /qltdUsersFindAllByEmpCode_/);
 
 assert.match(scopeSource, /function qltdFirebaseResolveIdentity_/);
 assert.match(scopeSource, /function qltdDeptScopeAuthorizeWrite_/);
 assert.match(apiSource, /qltdDeptScopeAuthorizeWrite_\(payload, action\)/);
 assert.match(extractFunction(apiSource, 'qltdDevApiHandlePost_'), /action === 'profile'[\s\S]*action === 'bootstrap'[\s\S]*action === 'user_lookupemployees'/);
 assert.match(extractFunction(apiSource, 'qltdDevApiProfile_'), /empCode:\s*user\.empCode \|\| ''/);
+assert.match(extractFunction(apiSource, 'qltdDevApiProfile_'), /resolveCurrentUser_\(params\)/);
 assert.doesNotMatch(apiSource, /user_getregistrationoptions/);
 assert.match(apiSource, /weekly_masterapprovals_get:\s*true/);
 assert.match(apiSource, /weekly_pbdetailapprovals_get:\s*true/);
@@ -190,7 +191,7 @@ assert.match(appSource, /user_lookupemployees/);
 assert.match(appSource, /postBackendJson\(\{ action: 'user_register', empCode \}\)/);
 assert.match(appSource, /onRegistered:\s*resumeAuthenticatedAppAfterRegistration/);
 assert.doesNotMatch(appSource, /user_getregistrationoptions|GUEST_VIEWER/);
-assert.match(appSource, /code === 'USER_NOT_FOUND' \|\| profile\.requiresRegistration === true/);
+assert.match(appSource, /code === 'USER_NOT_REGISTERED'[\s\S]*code === 'USER_NOT_FOUND'[\s\S]*profile\.requiresRegistration === true/);
 assert.match(appSource, /registrationGate\?\.show\(user\)/);
 assert.match(extractFunction(appSource, 'fetchBackendJson'), /const includeAuth = options\.auth !== false && action !== 'health'/);
 assert.match(extractFunction(appSource, 'fetchBackendJson'), /getIdToken\(forceRefresh\)/);

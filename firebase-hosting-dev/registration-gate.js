@@ -30,20 +30,28 @@ export function buildRegistrationPositions(profiles = [], deptCode = '') {
 }
 
 export function getRegistrationErrorMessage(result) {
-  const code = String(result?.errorCode || result?.message || '').trim().toUpperCase();
+  const code = String(result?.error?.code || result?.errorCode || result?.message || '').trim().toUpperCase();
   const messages = {
-    NAME_NOT_FOUND: 'Không tìm thấy nhân sự phù hợp.',
+    ID_TOKEN_REQUIRED: 'Không tìm thấy phiên đăng nhập Google. Vui lòng đăng nhập lại.',
+    ID_TOKEN_INVALID: 'Phiên đăng nhập Google không hợp lệ hoặc đã hết hạn. Vui lòng thử lại.',
+    USER_NOT_REGISTERED: 'Tài khoản chưa được đăng ký trên hệ thống.',
+    USER_DUPLICATE: 'Dữ liệu tài khoản bị trùng. Vui lòng liên hệ quản trị.',
+    USER_DISABLED: 'Tài khoản của bạn đã bị vô hiệu hóa.',
     EMPLOYEE_ALREADY_LINKED: 'Hồ sơ nhân sự này đã được liên kết với tài khoản Google khác.',
+    EMP_CODE_ALREADY_LINKED: 'Hồ sơ nhân sự này đã được liên kết với tài khoản Google khác.',
     USER_INACTIVE: 'Tài khoản của bạn đang bị khóa.',
     EMPLOYEE_INACTIVE: 'Hồ sơ không còn trạng thái làm việc.',
-    EMPLOYEE_DEPT_INVALID: 'Hồ sơ nhân sự chưa có Phòng/Ban hợp lệ.',
     EMPLOYEE_NOT_FOUND: 'Không tìm thấy hồ sơ nhân sự.',
+    EMPLOYEE_DUPLICATE: 'Mã nhân sự đang bị trùng trong nguồn nhân sự. Vui lòng liên hệ quản trị.',
     EMAIL_MISMATCH: 'Email gửi lên không khớp tài khoản Google đang đăng nhập.',
-    ID_TOKEN_INVALID: 'Phiên đăng nhập Google không hợp lệ. Vui lòng đăng nhập lại.',
     ID_TOKEN_EXPIRED: 'Phiên đăng nhập Google đã hết hạn. Vui lòng thử lại.',
-    REGISTRATION_WRITE_FAILED: 'Không thể hoàn tất đăng ký. Vui lòng thử lại.'
+    REGISTRATION_CONFLICT: 'Thông tin đăng ký đã thay đổi hoặc đang được xử lý. Vui lòng tải lại và thử lại.',
+    SOURCE_SHEET_NOT_FOUND: 'Không tìm thấy nguồn dữ liệu nhân sự đã cấu hình.',
+    SOURCE_CONFIGURATION_ERROR: 'Cấu hình nguồn dữ liệu chưa hợp lệ. Vui lòng liên hệ quản trị.',
+    INTERNAL_ERROR: 'Hệ thống không thể hoàn tất yêu cầu. Vui lòng thử lại.',
+    INVALID_ROLE: 'Vai trò tài khoản không hợp lệ. Vui lòng liên hệ quản trị.'
   };
-  return messages[code] || String(result?.errorMessage || result?.message || 'Không thể hoàn tất yêu cầu.');
+  return messages[code] || String(result?.error?.message || result?.errorMessage || result?.message || 'Không thể hoàn tất yêu cầu.');
 }
 
 export function createRegistrationGate(options = {}) {

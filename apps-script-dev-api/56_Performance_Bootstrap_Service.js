@@ -1,48 +1,16 @@
 function qltdDevApiBootstrap_(params) {
-  const email = qltdDevApiNormalizeEmail_(params && params.email);
+  const resolution = resolveCurrentUser_(params);
+  if (!resolution.success) return resolution;
+
+  const user = resolution.user;
   const meta = {
     action: 'bootstrap',
-    email: email || 'anonymous'
+    email: user.email
   };
-
-  qltdUsersEnsureSheet_();
-  qltdUsersSeedAdminIfMissing_();
-
-  const user = qltdUsersGetByEmail_(email);
-  if (!user) {
-    return {
-      success: false,
-      message: 'USER_NOT_FOUND',
-      apiStatus: 'CONNECTED',
-      source: QLTD_DEV_API_SOURCE,
-      meta: meta
-    };
-  }
-
-  if (!qltdUsersIsValidStatus_(user.status) || user.status !== 'ACTIVE') {
-    return {
-      success: false,
-      message: 'USER_INACTIVE',
-      apiStatus: 'CONNECTED',
-      source: QLTD_DEV_API_SOURCE,
-      meta: meta
-    };
-  }
-
-  if (!qltdUsersIsValidRole_(user.role)) {
-    return {
-      success: false,
-      message: 'INVALID_ROLE',
-      apiStatus: 'CONNECTED',
-      source: QLTD_DEV_API_SOURCE,
-      meta: meta
-    };
-  }
 
   qltdProjectsEnsureSheet_();
   qltdProjectsSeedDefaultIfMissing_();
-
-  const projects = qltdProjectsListForUser_(email).map(function(project) {
+  const projects = qltdProjectsListForUser_(user.email).map(function(project) {
     return {
       projectCode: project.projectCode,
       projectName: project.projectName,
@@ -62,6 +30,7 @@ function qltdDevApiBootstrap_(params) {
       status: user.status,
       deptCode: user.deptCode,
       deptName: user.deptName,
+      empCode: user.empCode || '',
       permissions: qltdPermissionsForRole_(user.role),
       delegatedScopes: qltdUserProjectDeptAccessResolveAllEffectiveScopes_(user.email),
       apiStatus: 'CONNECTED',
