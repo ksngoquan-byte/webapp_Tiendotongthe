@@ -693,7 +693,8 @@ function qltdWorkListWeeklyItems_(params) {
   const context = qltdWorkBuildDeptContext_(scope.project, scope.dept, scope.requestedDeptCode, scope.warnings);
   const masterRead = qltdWorkReadDeptTasksForContext_(context, {}, action);
   if (masterRead.error) return masterRead.error;
-  const officialMasters = qltdWeeklyTaskUpdatesReadOfficialMasters_(scope, masterRead.tasks, action);
+  const deptMasterSources = qltdWeeklyTaskUpdatesSelectDeptMasterSources_(masterRead.tasks);
+  const officialMasters = qltdWeeklyTaskUpdatesReadOfficialMasters_(scope, deptMasterSources.tasks, action);
   if (officialMasters.error) return officialMasters.error;
   const progressPermission = qltdResolveDeptProgressPermission_(
     auth.user,
@@ -770,7 +771,54 @@ function qltdWorkListWeeklyItems_(params) {
       canWriteBudget: !restrictedDelegatedUpdate && (role !== 'REPORTER' || delegatedDeptManager)
     },
     standaloneBudgetItems: restrictedDelegatedUpdate ? [] : (budgetContext.standaloneItems || [])
-  }, scope.warnings.concat(officialMasters.warnings || []).concat(budgetContext.warnings || []).concat(detailContext.error ? [qltdWorkWarning_('PB_DETAIL_UNAVAILABLE', 'PB_DETAIL items could not be loaded.')] : []), scope.meta);
+  }, scope.warnings.concat(deptMasterSources.warnings || []).concat(officialMasters.warnings || []).concat(budgetContext.warnings || []).concat(detailContext.error ? [qltdWorkWarning_('PB_DETAIL_UNAVAILABLE', 'PB_DETAIL items could not be loaded.')] : []), scope.meta);
+}
+
+function qltdWeeklyTaskUpdatesSelectDeptMasterSources_(deptTasks) {
+  const groups = {};
+  const groupOrder = [];
+  const warnings = [];
+
+  (deptTasks || []).forEach(function(task) {
+    const masterTaskCode = qltdWeeklyTaskUpdatesNormalizeTaskCode_(task && task.masterTaskCode);
+    const rowType = String(task && task.rowType || '').trim().toUpperCase();
+    const detailTaskId = String(task && task.detailTaskId || '').trim();
+    if (!masterTaskCode || detailTaskId) return;
+    if (rowType && rowType !== 'MASTER') return;
+    if (!groups[masterTaskCode]) {
+      groups[masterTaskCode] = [];
+      groupOrder.push(masterTaskCode);
+    }
+    groups[masterTaskCode].push(task);
+  });
+
+  const tasks = groupOrder.map(function(masterTaskCode) {
+    const matches = groups[masterTaskCode];
+    const rowNumbers = matches.map(function(task) {
+      return Number(task && task.rowNumber || 0);
+    }).filter(function(rowNumber) {
+      return rowNumber > 0;
+    });
+    const sourceMappingUnique = matches.length === 1;
+    if (!sourceMappingUnique) {
+      warnings.push(qltdWorkWarning_('DEPT_MASTER_DUPLICATED', 'More than one department MASTER row uses this masterTaskCode; source mapping is not safe for editing.', {
+        masterTaskCode: masterTaskCode,
+        matchCount: matches.length,
+        rowNumbers: rowNumbers
+      }));
+    }
+    return Object.assign({}, matches[0], {
+      masterTaskCode: masterTaskCode,
+      sourceMappingUnique: sourceMappingUnique,
+      deptMasterMatchCount: matches.length,
+      deptMasterRowNumbers: rowNumbers
+    });
+  });
+
+  return {
+    tasks: tasks,
+    warnings: warnings
+  };
 }
 
 function qltdWeeklyTaskUpdatesReadOfficialMasters_(scope, deptMasterRows, action) {
@@ -845,7 +893,7 @@ function qltdWeeklyTaskUpdatesBuildOfficialMasterDto_(official, deptTask) {
     ownerText: String(official.owner || deptTask.ownerText || '').trim(),
     coordinatorText: deptTask.coordinatorText || '',
     officialSource: 'GANTT_CONG_VIEC',
-    sourceMappingUnique: true,
+    sourceMappingUnique: deptTask.sourceMappingUnique !== false,
     sourceRowType: String(official.rowType || '').trim().toUpperCase()
   };
 }
