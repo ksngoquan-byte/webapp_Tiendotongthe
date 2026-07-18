@@ -787,21 +787,29 @@ function qltdWeeklyTaskUpdatesReadOfficialMasters_(scope, deptMasterRows, action
   result.data.forEach(function(task) {
     [task.code, task.id].forEach(function(value) {
       const key = qltdWeeklyTaskUpdatesNormalizeTaskCode_(value);
-      if (key && !officialByCode[key]) officialByCode[key] = task;
+      if (!key) return;
+      officialByCode[key] = officialByCode[key] || [];
+      if (officialByCode[key].indexOf(task) === -1) officialByCode[key].push(task);
     });
   });
   const tasks = (deptMasterRows || []).map(function(deptTask) {
     const code = qltdWeeklyTaskUpdatesNormalizeTaskCode_(deptTask.masterTaskCode);
-    const official = officialByCode[code];
+    const matches = officialByCode[code] || [];
+    const official = matches.length === 1 ? matches[0] : null;
     if (!official) {
-      warnings.push(qltdWorkWarning_('OFFICIAL_MASTER_NOT_FOUND', 'MASTER not found in Gantt/Cong_viec payload; using dept reference fields for this item only.', {
-        masterTaskCode: deptTask.masterTaskCode
+      warnings.push(qltdWorkWarning_(matches.length > 1 ? 'OFFICIAL_MASTER_DUPLICATED' : 'OFFICIAL_MASTER_NOT_FOUND', matches.length > 1
+        ? 'More than one MASTER row matched this masterTaskCode; source mapping is not safe for editing.'
+        : 'MASTER not found in Gantt/Cong_viec payload; using dept reference fields for this item only.', {
+        masterTaskCode: deptTask.masterTaskCode,
+        matchCount: matches.length
       }));
       return Object.assign({}, deptTask, {
         ownZone: '',
         ownHangMuc: '',
         zone: '',
-        hangMuc: ''
+        hangMuc: '',
+        sourceMappingUnique: false,
+        sourceRowType: ''
       });
     }
     return qltdWeeklyTaskUpdatesBuildOfficialMasterDto_(official, deptTask);
@@ -836,7 +844,9 @@ function qltdWeeklyTaskUpdatesBuildOfficialMasterDto_(official, deptTask) {
     budgetActual: Number(deptTask.budgetActual || 0),
     ownerText: String(official.owner || deptTask.ownerText || '').trim(),
     coordinatorText: deptTask.coordinatorText || '',
-    officialSource: 'GANTT_CONG_VIEC'
+    officialSource: 'GANTT_CONG_VIEC',
+    sourceMappingUnique: true,
+    sourceRowType: String(official.rowType || '').trim().toUpperCase()
   };
 }
 
@@ -2058,7 +2068,10 @@ function qltdWeeklyTaskUpdatesBuildItem_(type, id, source, weekStart, weekEnd, s
     budgetGroup: source.budgetGroup || '',
     budgetStage: source.budgetStage || '',
     budgetFlowType: qltdWeeklyTaskUpdatesResolveCashFlowType_(source),
-    hasDetails: !!hasDetails, progressReadonly: type === 'MASTER' && !!hasDetails, officialComplete: !!officialComplete, eligibleReason: reason, eligible: !!reason
+    hasDetails: !!hasDetails, progressReadonly: type === 'MASTER' && !!hasDetails, officialComplete: !!officialComplete,
+    sourceMappingUnique: source.sourceMappingUnique === true,
+    sourceRowType: String(source.sourceRowType || '').trim().toUpperCase(),
+    eligibleReason: reason, eligible: !!reason
   };
 }
 

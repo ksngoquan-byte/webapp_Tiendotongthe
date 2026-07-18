@@ -149,6 +149,10 @@ function qltdDevApiHandleGet(e) {
     return qltdDevApiJson_(qltdProjectScheduleGetStateApi_(params));
   }
 
+  if (action === 'admin_get_approved_objective') {
+    return qltdDevApiJson_(qltdAdminObjectiveGet_(params));
+  }
+
   if (action === 'notifications_list') {
     return qltdDevApiJson_(qltdNotificationsList_(params));
   }
@@ -297,6 +301,10 @@ function qltdDevApiHandlePost_(e) {
 
   if (action === 'recalculateprojectschedule') {
     return qltdDevApiJson_(qltdProjectScheduleRecalculate_(payload));
+  }
+
+  if (action === 'admin_update_approved_objective') {
+    return qltdDevApiJson_(qltdAdminObjectiveUpdate_(payload));
   }
 
   const scopeResult = qltdDeptScopeAuthorizeWrite_(payload, action);

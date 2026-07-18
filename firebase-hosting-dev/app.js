@@ -136,6 +136,7 @@ let qltdDetailPopupRequestSeq = 0;
 let qltdAdminApprovalRequestSeq = 0;
 let qltdAdminApprovalReviewSeq = 0;
 let qltdAdminApprovalView = { projectCode: '', loading: false, error: '', notice: '', approvals: [], reviewing: null, reviewDrafts: {} };
+let qltdAdminObjectiveEditState = { projectCode: '', masterTaskCode: '', loading: false, saving: false, error: '', objective: null, requestId: '' };
 let qltdPbDetailApprovalRequestSeq = 0;
 let qltdPbDetailApprovalReviewSeq = 0;
 let qltdPbDetailApprovalView = { projectCode: '', loading: false, error: '', approvals: [], reviewing: null };
@@ -4570,6 +4571,18 @@ function qltdWeeklyDisplayTitle(item) {
   );
 }
 
+function canEditApprovedObjective(item, saved, context, capabilities = {}) {
+  const role = normalizeRoleKey(capabilities.role || currentUserProfile?.role);
+  const rowType = String(item?.sourceRowType || '').trim().toUpperCase();
+  return canAdmin() && role === 'ADMIN' &&
+    item?.itemType === 'MASTER' &&
+    saved?.approvalStatus === 'APPROVED' &&
+    item?.sourceMappingUnique === true &&
+    ['TASK', 'MILESTONE'].includes(rowType) &&
+    !!String(context?.projectCode || '').trim() &&
+    !!String(item?.itemId || '').trim();
+}
+
 function renderWeeklyObjectiveList(items, updates, context, week, capabilities) {
   if (!items.length) return '<p class="empty-state">Không có mục tiêu liên quan đến tuần này.</p>';
   return `<div class="weekly-objective-list">${items.map((item) => {
@@ -4577,8 +4590,178 @@ function renderWeeklyObjectiveList(items, updates, context, week, capabilities) 
     const effective = getWeeklyEffectiveTaskState(item, saved);
     const key = `${item.itemType}:${item.itemId}`;
     const canUpdate = canUpdateWeeklyItem(item, capabilities);
-    return `<article class="weekly-objective-row ${key === qltdSelectedWeeklyItemKey ? 'is-selected' : ''} ${isNotificationWeeklyHighlight(key) ? 'is-notification-target' : ''}" data-notification-weekly-key="${escapeHtml(key)}"><div><span class="mono">${escapeHtml(item.wbs || item.itemId)}</span><strong>${escapeHtml(qltdWeeklyDisplayTitle(item))}</strong><small>${escapeHtml(formatIsoDateVi(item.planStart) || '—')} – ${escapeHtml(formatIsoDateVi(item.planFinish) || '—')}</small></div><div><strong>${escapeHtml(effective.progress)}%</strong><span>${escapeHtml(effective.status)}</span><div class="weekly-workflow-badges">${renderWeeklyWorkflowBadges(item, saved, week)}</div></div><div>${canUpdate ? `<button type="button" class="weekly-update-button" data-weekly-select="${escapeHtml(key)}">${saved ? 'Sửa cập nhật' : 'Cập nhật'}</button>` : '<span class="weekly-readonly-action">Chỉ xem</span>'}</div></article>`;
+    const canEditApproved = typeof canEditApprovedObjective === 'function' && canEditApprovedObjective(item, saved, context, capabilities);
+    return `<article class="weekly-objective-row ${key === qltdSelectedWeeklyItemKey ? 'is-selected' : ''} ${isNotificationWeeklyHighlight(key) ? 'is-notification-target' : ''}" data-notification-weekly-key="${escapeHtml(key)}"><div><span class="mono">${escapeHtml(item.wbs || item.itemId)}</span><strong>${escapeHtml(qltdWeeklyDisplayTitle(item))}</strong><small>${escapeHtml(formatIsoDateVi(item.planStart) || '—')} – ${escapeHtml(formatIsoDateVi(item.planFinish) || '—')}</small></div><div><strong>${escapeHtml(effective.progress)}%</strong><span>${escapeHtml(effective.status)}</span><div class="weekly-workflow-badges">${renderWeeklyWorkflowBadges(item, saved, week)}</div></div><div class="admin-approval-actions">${canUpdate ? `<button type="button" class="weekly-update-button" data-weekly-select="${escapeHtml(key)}">${saved ? 'Sửa cập nhật' : 'Cập nhật'}</button>` : '<span class="weekly-readonly-action">Chỉ xem</span>'}${canEditApproved ? `<button type="button" class="secondary-button" data-admin-edit-objective="${escapeHtml(item.itemId)}" data-admin-edit-project="${escapeHtml(context.projectCode)}">Sửa mục tiêu</button>` : ''}</div></article>`;
   }).join('')}</div>`;
+}
+
+function ensureAdminApprovedObjectiveEditor() {
+  let modal = document.getElementById('adminApprovedObjectiveEditor');
+  if (modal) return modal;
+  modal = document.createElement('div');
+  modal.id = 'adminApprovedObjectiveEditor';
+  modal.className = 'detail-status-overlay';
+  modal.hidden = true;
+  modal.innerHTML = '<div class="detail-status-dialog" role="dialog" aria-modal="true" aria-labelledby="adminObjectiveEditorTitle"><div id="adminObjectiveEditorContent"></div></div>';
+  modal.onclick = (event) => {
+    if (event.target === modal && !qltdAdminObjectiveEditState.saving) closeAdminApprovedObjectiveEditor();
+  };
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !modal.hidden && !qltdAdminObjectiveEditState.saving) closeAdminApprovedObjectiveEditor();
+  });
+  document.body.appendChild(modal);
+  return modal;
+}
+
+function closeAdminApprovedObjectiveEditor() {
+  const modal = document.getElementById('adminApprovedObjectiveEditor');
+  if (modal) modal.hidden = true;
+  document.body.classList.remove('has-detail-status-popup');
+  qltdAdminObjectiveEditState = { projectCode: '', masterTaskCode: '', loading: false, saving: false, error: '', objective: null, requestId: '' };
+}
+
+function renderAdminApprovedObjectiveEditor() {
+  const modal = ensureAdminApprovedObjectiveEditor();
+  const content = modal.querySelector('#adminObjectiveEditorContent');
+  const state = qltdAdminObjectiveEditState;
+  if (!content) return;
+  if (state.loading) {
+    content.innerHTML = '<div class="detail-status-header"><div><span>Quản trị mục tiêu</span><h2 id="adminObjectiveEditorTitle">Đang tải dữ liệu mới nhất...</h2></div><button type="button" class="detail-status-close" data-admin-objective-close aria-label="Đóng">×</button></div>';
+  } else if (state.error && !state.objective) {
+    content.innerHTML = `<div class="detail-status-header"><div><span>Quản trị mục tiêu</span><h2 id="adminObjectiveEditorTitle">Không thể mở biểu mẫu</h2></div><button type="button" class="detail-status-close" data-admin-objective-close aria-label="Đóng">×</button></div><div class="weekly-error-state" role="alert"><p>${escapeHtml(state.error)}</p><button type="button" class="secondary-button" data-admin-objective-retry>Tải lại</button></div>`;
+  } else {
+    const objective = state.objective || {};
+    const hasPredecessor = !!String(objective.predecessor || '').trim();
+    content.innerHTML = `<div class="detail-status-header"><div><span>Quản trị mục tiêu đã phê duyệt</span><h2 id="adminObjectiveEditorTitle">${escapeHtml(objective.wbs ? `${objective.wbs} · ${objective.taskName}` : objective.taskName || objective.masterTaskCode)}</h2><small>${escapeHtml(objective.projectCode || '')} · ${escapeHtml(objective.masterTaskCode || '')} · APPROVED</small></div><button type="button" class="detail-status-close" data-admin-objective-close aria-label="Đóng" ${state.saving ? 'disabled' : ''}>×</button></div>
+      <section class="weekly-inline-form">
+        <div class="weekly-form-section">
+          <div class="weekly-form-section-title"><span>THÔNG TIN ĐƯỢC PHÉP ĐIỀU CHỈNH</span></div>
+          <div class="weekly-form-grid">
+            <label class="weekly-update-field">Tên/nội dung mục tiêu<input id="adminObjectiveTaskName" type="text" maxlength="500" value="${escapeHtml(objective.taskName || '')}"></label>
+            <label class="weekly-update-field">Số ngày kế hoạch<input id="adminObjectiveDuration" type="number" min="1" step="1" value="${escapeHtml(objective.durationDays || '')}"></label>
+            <label class="weekly-update-field">Công việc tiền nhiệm<input id="adminObjectivePredecessor" type="text" maxlength="500" value="${escapeHtml(objective.predecessor || '')}" placeholder="Ví dụ: 12FS; 15SS+2"></label>
+            <label class="weekly-update-field">Ngày bắt đầu neo<input id="adminObjectiveAnchorStart" type="date" value="${escapeHtml(objective.anchorStart || '')}" ${hasPredecessor ? 'disabled' : ''}><small id="adminObjectiveAnchorHint">${hasPredecessor ? 'Có tiền nhiệm: Schedule Engine tự tính ngày bắt đầu/kết thúc.' : 'Không có tiền nhiệm: ngày bắt đầu neo là bắt buộc.'}</small></label>
+            <label class="weekly-update-field">Ngày kết thúc hiện tại<input type="date" value="${escapeHtml(objective.planFinish || '')}" disabled><small>Chỉ đọc; Schedule Engine tự tính.</small></label>
+          </div>
+          <label class="weekly-update-field">Lý do điều chỉnh<textarea id="adminObjectiveReason" maxlength="1000" required placeholder="Bắt buộc nhập lý do điều chỉnh"></textarea></label>
+        </div>
+        <div class="weekly-update-actions"><button type="button" class="secondary-button" data-admin-objective-close ${state.saving ? 'disabled' : ''}>Hủy</button><div><button id="saveAdminApprovedObjectiveButton" type="button" class="weekly-update-button" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Đang lưu...' : 'Lưu thay đổi'}</button><span id="adminObjectiveSaveStatus" class="weekly-update-note">${escapeHtml(state.error || '')}</span></div></div>
+      </section>`;
+  }
+  content.querySelectorAll('[data-admin-objective-close]').forEach((button) => {
+    button.onclick = () => { if (!qltdAdminObjectiveEditState.saving) closeAdminApprovedObjectiveEditor(); };
+  });
+  const retry = content.querySelector('[data-admin-objective-retry]');
+  if (retry) retry.onclick = () => openAdminApprovedObjectiveEditor(state.projectCode, state.masterTaskCode);
+  const predecessor = content.querySelector('#adminObjectivePredecessor');
+  if (predecessor) predecessor.oninput = syncAdminObjectiveAnchorState;
+  const save = content.querySelector('#saveAdminApprovedObjectiveButton');
+  if (save) save.onclick = saveAdminApprovedObjective;
+}
+
+function syncAdminObjectiveAnchorState() {
+  const predecessor = document.getElementById('adminObjectivePredecessor');
+  const anchor = document.getElementById('adminObjectiveAnchorStart');
+  const hint = document.getElementById('adminObjectiveAnchorHint');
+  const linked = !!String(predecessor?.value || '').trim();
+  if (anchor) anchor.disabled = linked;
+  if (hint) hint.textContent = linked
+    ? 'Có tiền nhiệm: Schedule Engine tự tính ngày bắt đầu/kết thúc.'
+    : 'Không có tiền nhiệm: ngày bắt đầu neo là bắt buộc.';
+}
+
+async function openAdminApprovedObjectiveEditor(projectCode, masterTaskCode) {
+  const code = String(projectCode || '').trim();
+  const taskCode = String(masterTaskCode || '').trim();
+  if (!canAdmin() || !code || !taskCode) return;
+  const modal = ensureAdminApprovedObjectiveEditor();
+  modal.hidden = false;
+  document.body.classList.add('has-detail-status-popup');
+  qltdAdminObjectiveEditState = { projectCode: code, masterTaskCode: taskCode, loading: true, saving: false, error: '', objective: null, requestId: '' };
+  renderAdminApprovedObjectiveEditor();
+  try {
+    const result = await fetchBackendJson('admin_get_approved_objective', {
+      projectCode: code,
+      masterTaskCode: taskCode
+    }, { auth: true });
+    if (!result?.success) throw new Error(getBackendErrorMessage(result, 'Không tải được dữ liệu mục tiêu mới nhất.'));
+    const objective = result.data?.objective || result.objective;
+    if (!objective || objective.approvalStatus !== 'APPROVED' || objective.projectCode !== code || objective.masterTaskCode !== taskCode) {
+      throw new Error('Backend không xác nhận được mục tiêu APPROVED cần sửa.');
+    }
+    qltdAdminObjectiveEditState = { projectCode: code, masterTaskCode: taskCode, loading: false, saving: false, error: '', objective, requestId: '' };
+  } catch (error) {
+    qltdAdminObjectiveEditState = { projectCode: code, masterTaskCode: taskCode, loading: false, saving: false, error: error.message || 'Không thể mở biểu mẫu.', objective: null, requestId: '' };
+  }
+  renderAdminApprovedObjectiveEditor();
+}
+
+function getAdminObjectiveRequestId() {
+  if (!qltdAdminObjectiveEditState.requestId) {
+    qltdAdminObjectiveEditState.requestId = `ADMIN-OBJ-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+  return qltdAdminObjectiveEditState.requestId;
+}
+
+async function saveAdminApprovedObjective() {
+  const state = qltdAdminObjectiveEditState;
+  if (!canAdmin() || state.saving || !state.objective) return;
+  const taskName = String(document.getElementById('adminObjectiveTaskName')?.value || '').trim();
+  const durationDays = Number(document.getElementById('adminObjectiveDuration')?.value || 0);
+  const predecessor = String(document.getElementById('adminObjectivePredecessor')?.value || '').trim();
+  const anchorStart = String(document.getElementById('adminObjectiveAnchorStart')?.value || '').trim();
+  const reason = String(document.getElementById('adminObjectiveReason')?.value || '').trim();
+  const status = document.getElementById('adminObjectiveSaveStatus');
+  const button = document.getElementById('saveAdminApprovedObjectiveButton');
+  if (!taskName) { if (status) status.textContent = 'Tên/nội dung mục tiêu là bắt buộc.'; return; }
+  if (!Number.isInteger(durationDays) || durationDays <= 0) { if (status) status.textContent = 'Số ngày kế hoạch phải là số nguyên dương.'; return; }
+  if (!predecessor && !anchorStart) { if (status) status.textContent = 'Mục tiêu không có tiền nhiệm phải có ngày bắt đầu neo.'; return; }
+  if (!reason) { if (status) status.textContent = 'Lý do điều chỉnh là bắt buộc.'; return; }
+  const confirmed = window.confirm('Việc sửa mục tiêu có thể làm thay đổi tiến độ các công việc liên quan. Hệ thống sẽ tự động tính lại tiến độ dự án. Bạn có xác nhận tiếp tục không?');
+  if (!confirmed) return;
+
+  state.saving = true;
+  state.error = '';
+  if (button) { button.disabled = true; button.textContent = 'Đang lưu...'; }
+  if (status) status.textContent = '';
+  const body = {
+    action: 'admin_update_approved_objective',
+    projectCode: state.projectCode,
+    masterTaskCode: state.masterTaskCode,
+    requestId: getAdminObjectiveRequestId(),
+    expectedVersion: state.objective.version,
+    reason,
+    updates: { taskName, durationDays, predecessor, anchorStart }
+  };
+  let result;
+  try {
+    result = await postBackendJson(body);
+    if (!result?.success) {
+      const error = new Error(getBackendErrorMessage(result, 'Không thể cập nhật mục tiêu.'));
+      error.backendResult = result;
+      throw error;
+    }
+  } catch (error) {
+    state.saving = false;
+    state.error = error.message || 'Không thể cập nhật mục tiêu.';
+    if (status) status.textContent = state.error;
+    if (button) { button.disabled = false; button.textContent = 'Lưu thay đổi'; }
+    return;
+  }
+
+  const data = result.data || result;
+  const projectCode = state.projectCode;
+  closeAdminApprovedObjectiveEditor();
+  showWeeklyToast(data.scheduleChanged ? 'Đã sửa mục tiêu và tính lại tiến độ dự án.' : 'Đã sửa mục tiêu; không cần chạy lại Schedule Engine.');
+  qltdDepartmentDashboardCache.delete(projectCode);
+  qltdGanttDirtyProjects.add(projectCode);
+  qltdGanttForceRefreshProjects.add(projectCode);
+  try {
+    await loadGanttDataForSelectedProject(projectCode, { forceRefresh: true });
+    await loadWeeklyTaskDataForCurrent({ force: true });
+  } catch (error) {
+    showWeeklyToast('Đã lưu mục tiêu nhưng chưa thể làm mới giao diện. Vui lòng tải lại dữ liệu.');
+  }
 }
 
 function renderWeeklyTaskList(items, updates, context, week, options = {}) {
@@ -4890,6 +5073,9 @@ function bindWeeklyTaskUpdateControls() {
     };
   });
   document.querySelectorAll('[data-weekly-select]').forEach((button) => { button.onclick = () => { qltdSelectedWeeklyItemKey = button.dataset.weeklySelect || ''; qltdWeeklyEditingItemKey = qltdSelectedWeeklyItemKey; qltdWeeklyNotificationDetailItemKey = ''; renderWeeklyTaskRegion(); }; });
+  document.querySelectorAll('[data-admin-edit-objective]').forEach((button) => {
+    button.onclick = () => openAdminApprovedObjectiveEditor(button.dataset.adminEditProject || '', button.dataset.adminEditObjective || '');
+  });
   document.querySelectorAll('[data-weekly-master-details]').forEach((button) => { button.onclick = () => { const payload = qltdDeptPlanPayload || {}; const dept = (payload.departments || []).find((item) => (item.deptCode || item.sheetName) === qltdSelectedDeptCode) || {}; openDetailStatusPopup(payload, dept, button.dataset.weeklyMasterDetails || ''); }; });
   document.querySelectorAll('[data-weekly-item]').forEach((button) => { button.onclick = () => { qltdWeeklyWorkspaceTab = button.dataset.weeklyItemType === 'PB_DETAIL' ? 'tasks' : 'objectives'; if (qltdWeeklyWorkspaceTab === 'tasks') qltdWeeklyResetTaskFilters(); qltdSelectedWeeklyItemKey = button.dataset.weeklyItem || ''; qltdWeeklyEditingItemKey = qltdSelectedWeeklyItemKey; qltdWeeklyNotificationDetailItemKey = ''; renderWeeklyTaskRegion(); }; });
   const close = document.querySelector('[data-weekly-close-form]'); if (close) close.onclick = () => { qltdSelectedWeeklyItemKey = ''; qltdWeeklyEditingItemKey = ''; qltdWeeklyNotificationDetailItemKey = ''; renderWeeklyTaskRegion(); };

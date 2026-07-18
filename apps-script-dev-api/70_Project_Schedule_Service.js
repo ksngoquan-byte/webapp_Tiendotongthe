@@ -113,15 +113,35 @@ function qltdProjectScheduleRecalculate_(payload) {
 
   const lock = LockService.getScriptLock();
   let locked = false;
-  let stage = 'LOCK';
   try {
     locked = lock.tryLock(QLTD_PROJECT_SCHEDULE_LOCK_TIMEOUT_MS);
     if (!locked) {
       return qltdProjectScheduleError_(action, 'SCHEDULE_LOCK_TIMEOUT', 'LOCK',
         'Dự án đang được tính lại tiến độ bởi một tiến trình khác.', projectCode);
     }
+    return qltdProjectScheduleRecalculateLocked_(projectCode, spreadsheet, auth.email, action);
+  } catch (error) {
+    Logger.log(JSON.stringify({
+      action: action,
+      projectCode: projectCode,
+      stage: 'LOCK',
+      message: String(error && error.message || error)
+    }));
+    return qltdProjectScheduleError_(action, 'SCHEDULE_RECALCULATE_FAILED', 'LOCK',
+      'Không thể hoàn tất tính lại tiến độ dự án.', projectCode);
+  } finally {
+    if (locked) lock.releaseLock();
+  }
+}
 
-    stage = 'ENGINE';
+/**
+ * Reuses the approved project recalculation pipeline while the caller owns the
+ * ScriptLock. This keeps Sheet writes and recalculation in one critical section.
+ */
+function qltdProjectScheduleRecalculateLocked_(projectCode, spreadsheet, actorEmail, actionName) {
+  const action = String(actionName || 'recalculateProjectSchedule');
+  let stage = 'ENGINE';
+  try {
     if (typeof chayScheduleEngineV1NoLockForSpreadsheet_ !== 'function') {
       return qltdProjectScheduleError_(action, 'SCHEDULE_ENGINE_UNAVAILABLE', stage,
         'Schedule Engine chưa sẵn sàng.', projectCode);
@@ -144,7 +164,7 @@ function qltdProjectScheduleRecalculate_(payload) {
     }
 
     stage = 'MARK_CLEAN';
-    const cleanState = qltdScheduleMarkProjectClean_(projectCode, auth.email, {
+    const cleanState = qltdScheduleMarkProjectClean_(projectCode, actorEmail, {
       changedDurationCount: Number(summary.changedDurationCount || 0),
       changedStartCount: Number(summary.changedStartCount || 0),
       changedFinishCount: Number(summary.changedFinishCount || 0),
@@ -177,7 +197,7 @@ function qltdProjectScheduleRecalculate_(payload) {
   } catch (error) {
     Logger.log(JSON.stringify({
       action: action,
-      projectCode: projectCode,
+      projectCode: qltdScheduleProjectCode_(projectCode),
       stage: stage,
       message: String(error && error.message || error)
     }));
@@ -187,7 +207,5 @@ function qltdProjectScheduleRecalculate_(payload) {
         ? 'Schedule Engine phát sinh lỗi.'
         : 'Không thể hoàn tất tính lại tiến độ dự án.',
       projectCode);
-  } finally {
-    if (locked) lock.releaseLock();
   }
 }
