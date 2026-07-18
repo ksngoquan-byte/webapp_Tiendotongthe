@@ -1,7 +1,7 @@
 const QLTD_ADMIN_OBJECTIVE_SOURCE = 'admin_approved_objective_v1';
 const QLTD_ADMIN_OBJECTIVE_GET_ACTION = 'admin_get_approved_objective';
 const QLTD_ADMIN_OBJECTIVE_UPDATE_ACTION = 'admin_update_approved_objective';
-const QLTD_ADMIN_OBJECTIVE_ALLOWED_ROW_TYPES = ['TASK', 'MILESTONE'];
+const QLTD_ADMIN_OBJECTIVE_ALLOWED_ROW_TYPES = ['TASK', 'MILESTONE', 'SCHEDULED_GROUP'];
 const QLTD_ADMIN_OBJECTIVE_ALLOWED_UPDATE_FIELDS = {
   taskName: true,
   durationDays: true,

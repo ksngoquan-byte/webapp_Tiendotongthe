@@ -15,7 +15,7 @@ function extractFunction(source, name, nextName) {
   return source.slice(start, end);
 }
 
-// Frontend visibility: exact ADMIN + MASTER + APPROVED + unique task/milestone source only.
+// Frontend visibility: exact ADMIN + MASTER + APPROVED + unique editable source row only.
 const visibilityContext = {
   currentUserProfile: { role: 'ADMIN' },
   normalizeRoleKey: (value) => String(value || '').trim().toUpperCase()
@@ -28,6 +28,8 @@ const approvedMaster = { itemType: 'MASTER', itemId: 'M1', sourceMappingUnique: 
 const approved = { approvalStatus: 'APPROVED' };
 const viewContext = { projectCode: 'P1' };
 assert.equal(visibilityContext.canEdit(approvedMaster, approved, viewContext, { role: 'ADMIN' }), true);
+assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'MILESTONE' }, approved, viewContext, { role: 'ADMIN' }), true);
+assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'SCHEDULED_GROUP' }, approved, viewContext, { role: 'ADMIN' }), true);
 for (const role of ['PMO', 'EDITOR', 'REPORTER', 'VIEWER']) {
   visibilityContext.currentUserProfile.role = role;
   assert.equal(visibilityContext.canEdit(approvedMaster, approved, viewContext, { role }), false, `${role} must not see edit`);
@@ -36,6 +38,7 @@ visibilityContext.currentUserProfile.role = 'ADMIN';
 assert.equal(visibilityContext.canEdit({ ...approvedMaster, itemType: 'PB_DETAIL' }, approved, viewContext, { role: 'ADMIN' }), false);
 assert.equal(visibilityContext.canEdit(approvedMaster, { approvalStatus: 'PENDING' }, viewContext, { role: 'ADMIN' }), false);
 assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'STRUCTURAL_GROUP' }, approved, viewContext, { role: 'ADMIN' }), false);
+assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'ZONE_GROUP' }, approved, viewContext, { role: 'ADMIN' }), false);
 assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceMappingUnique: false }, approved, viewContext, { role: 'ADMIN' }), false);
 
 const renderObjectives = extractFunction(appSource, 'renderWeeklyObjectiveList', 'ensureAdminApprovedObjectiveEditor');
@@ -321,7 +324,7 @@ assert.equal(result.success, true);
 assert.equal(result.data.resumed, true);
 assert.match(String(backend.raw[20]), /:SUCCESS\]/);
 
-// Real source resolver uses projectCode + masterTaskCode, requires one source row and blocks group rows.
+// Real source resolver uses projectCode + masterTaskCode, requires one matching source row and blocks structural rows.
 function createResolverRuntime(ganttData) {
   const raw = Array(23).fill(''); raw[0] = 'M1';
   const sheet = { getSheetByName: undefined };
@@ -333,7 +336,7 @@ function createResolverRuntime(ganttData) {
     qltdWorkOk_: () => ({ success: true }),
     qltdScheduleProjectCode_: (value) => String(value || '').trim().toUpperCase(),
     qltdWeeklyTaskUpdatesNormalizeTaskCode_: (value) => String(value || '').trim().toUpperCase(),
-    qltdProjectsGetByCode_: () => ({ projectCode: 'P1', status: 'ACTIVE', masterSpreadsheetId: 'MASTER-1' }),
+    qltdProjectsGetByCode_: (code) => code === 'P1' ? { projectCode: 'P1', status: 'ACTIVE', masterSpreadsheetId: 'MASTER-1' } : null,
     SpreadsheetApp: { openById: () => spreadsheet },
     qltdWeeklyMasterParseCongViec_: () => ({ tasks: [{ masterTaskCode: 'M1', rowNumber: 5, raw }], columns: {}, error: null }),
     qltdWeeklyTaskUpdatesFindSingleMasterTask_: (tasks, code) => code === 'M1' ? { task: tasks[0], error: null } : { error: { code: 'MASTER_TASK_NOT_FOUND', message: 'missing' } },
@@ -348,6 +351,10 @@ this.resolve = qltdAdminObjectiveResolveTarget_;`, context);
 
 let resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5 }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'TASK');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'MILESTONE', sourceRow: 5 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'MILESTONE');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'SCHEDULED_GROUP', sourceRow: 5 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'SCHEDULED_GROUP');
 resolver = createResolverRuntime([
   { code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5 },
   { code: 'M1', id: '2', rowType: 'TASK', sourceRow: 6 }
@@ -355,6 +362,13 @@ resolver = createResolverRuntime([
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'MASTER_TASK_DUPLICATED');
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'STRUCTURAL_GROUP', sourceRow: 5 }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_ROW_TYPE_FORBIDDEN');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'ZONE_GROUP', sourceRow: 5 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_ROW_TYPE_FORBIDDEN');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 6 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_SOURCE_ROW_MISMATCH');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5 }]);
+assert.equal(resolver.resolve('P1', 'M2', 'test', {}).error.errorCode, 'MASTER_TASK_NOT_FOUND');
+assert.equal(resolver.resolve('P2', 'M1', 'test', {}).error.errorCode, 'PROJECT_NOT_FOUND');
 
 // Dispatcher routes bypass shared department write scope and the service never writes protected columns.
 const postRoute = apiSource.indexOf("action === 'admin_update_approved_objective'");

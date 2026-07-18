@@ -4578,7 +4578,7 @@ function canEditApprovedObjective(item, saved, context, capabilities = {}) {
     item?.itemType === 'MASTER' &&
     saved?.approvalStatus === 'APPROVED' &&
     item?.sourceMappingUnique === true &&
-    ['TASK', 'MILESTONE'].includes(rowType) &&
+    ['TASK', 'MILESTONE', 'SCHEDULED_GROUP'].includes(rowType) &&
     !!String(context?.projectCode || '').trim() &&
     !!String(item?.itemId || '').trim();
 }
