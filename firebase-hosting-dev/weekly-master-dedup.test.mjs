@@ -197,7 +197,7 @@ vm.runInContext(`${appSource.slice(canEditStart, canEditEnd)}\nthis.canEdit = ca
 const duplicateItem = weeklyContext.api.buildItem(
   'MASTER', 'CV-037', duplicateMapped, '2026-07-20', '2026-07-26', '', false
 );
-assert.equal(editContext.canEdit(duplicateItem, { approvalStatus: 'APPROVED' }, { projectCode: '24-1.DB' }, { role: 'ADMIN' }), false);
+assert.equal(editContext.canEdit(duplicateItem, null, { projectCode: '24-1.DB' }, { role: 'ADMIN' }), false);
 
 const legacy = weeklyContext.api.selectDeptMasters([
   { masterTaskCode: ' CV-LEGACY ', rowType: '   ', detailTaskId: '', rowNumber: 12 }

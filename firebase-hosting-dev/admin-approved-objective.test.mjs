@@ -15,7 +15,7 @@ function extractFunction(source, name, nextName) {
   return source.slice(start, end);
 }
 
-// Frontend visibility: exact ADMIN + MASTER + APPROVED + unique editable source row only.
+// Frontend visibility: ADMIN can edit every valid, uniquely mapped MASTER row regardless of weekly state or progress.
 const visibilityContext = {
   currentUserProfile: { role: 'ADMIN' },
   normalizeRoleKey: (value) => String(value || '').trim().toUpperCase()
@@ -24,50 +24,55 @@ visibilityContext.canAdmin = () => String(visibilityContext.currentUserProfile?.
 vm.createContext(visibilityContext);
 vm.runInContext(`${extractFunction(appSource, 'canEditApprovedObjective', 'renderWeeklyObjectiveList')}
 this.canEdit = canEditApprovedObjective;`, visibilityContext);
-const approvedMaster = { itemType: 'MASTER', itemId: 'M1', sourceMappingUnique: true, sourceRowType: 'TASK' };
-const approved = { approvalStatus: 'APPROVED' };
+const editableMaster = { itemType: 'MASTER', itemId: 'M1', sourceMappingUnique: true, sourceRowType: 'TASK' };
 const viewContext = { projectCode: 'P1' };
-assert.equal(visibilityContext.canEdit(approvedMaster, approved, viewContext, { role: 'ADMIN' }), true);
-assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'MILESTONE' }, approved, viewContext, { role: 'ADMIN' }), true);
-assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'SCHEDULED_GROUP' }, approved, viewContext, { role: 'ADMIN' }), true);
+for (const progress of [0, 40, 70, 100]) {
+  for (const saved of [null, { approvalStatus: 'PENDING' }, { approvalStatus: 'REJECTED' }, { approvalStatus: 'APPROVED' }]) {
+    assert.equal(visibilityContext.canEdit({ ...editableMaster, progress }, saved, viewContext, { role: 'ADMIN' }), true,
+      `ADMIN must edit a valid MASTER at ${progress}% with weekly state ${saved?.approvalStatus || 'NONE'}`);
+  }
+}
+assert.equal(visibilityContext.canEdit({ ...editableMaster, sourceRowType: 'MILESTONE' }, null, viewContext, { role: 'ADMIN' }), true);
+assert.equal(visibilityContext.canEdit({ ...editableMaster, sourceRowType: 'SCHEDULED_GROUP' }, null, viewContext, { role: 'ADMIN' }), true);
 for (const role of ['PMO', 'EDITOR', 'REPORTER', 'VIEWER']) {
   visibilityContext.currentUserProfile.role = role;
-  assert.equal(visibilityContext.canEdit(approvedMaster, approved, viewContext, { role }), false, `${role} must not see edit`);
+  assert.equal(visibilityContext.canEdit(editableMaster, null, viewContext, { role }), false, `${role} must not see edit`);
 }
 visibilityContext.currentUserProfile.role = 'ADMIN';
-assert.equal(visibilityContext.canEdit({ ...approvedMaster, itemType: 'PB_DETAIL' }, approved, viewContext, { role: 'ADMIN' }), false);
-assert.equal(visibilityContext.canEdit(approvedMaster, { approvalStatus: 'PENDING' }, viewContext, { role: 'ADMIN' }), false);
-assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'STRUCTURAL_GROUP' }, approved, viewContext, { role: 'ADMIN' }), false);
-assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceRowType: 'ZONE_GROUP' }, approved, viewContext, { role: 'ADMIN' }), false);
-assert.equal(visibilityContext.canEdit({ ...approvedMaster, sourceMappingUnique: false }, approved, viewContext, { role: 'ADMIN' }), false);
+assert.equal(visibilityContext.canEdit({ ...editableMaster, itemType: 'PB_DETAIL' }, null, viewContext, { role: 'ADMIN' }), false);
+assert.equal(visibilityContext.canEdit({ ...editableMaster, sourceRowType: 'STRUCTURAL_GROUP' }, null, viewContext, { role: 'ADMIN' }), false);
+assert.equal(visibilityContext.canEdit({ ...editableMaster, sourceRowType: 'ZONE_GROUP' }, null, viewContext, { role: 'ADMIN' }), false);
+assert.equal(visibilityContext.canEdit({ ...editableMaster, sourceMappingUnique: false }, null, viewContext, { role: 'ADMIN' }), false);
 
 const renderObjectives = extractFunction(appSource, 'renderWeeklyObjectiveList', 'ensureAdminApprovedObjectiveEditor');
 assert.match(renderObjectives, /data-admin-edit-objective/);
 assert.match(renderObjectives, />Sửa mục tiêu</);
 
 // API errors retain the editor and form data; success refreshes Gantt, Dashboard-derived cache and objective data.
-function createFrontendSaveContext(postResult) {
+function createFrontendSaveContext(postResult, options = {}) {
   const elements = {
-    adminObjectiveTaskName: { value: 'Mục tiêu mới' },
-    adminObjectiveDuration: { value: '5' },
-    adminObjectivePredecessor: { value: '' },
-    adminObjectiveAnchorStart: { value: '2026-07-20' },
-    adminObjectiveReason: { value: 'Điều chỉnh kế hoạch' },
+    adminObjectiveTaskName: { value: options.taskName || 'Mục tiêu mới' },
+    adminObjectiveDuration: { value: options.duration || '5' },
+    adminObjectivePredecessor: { value: options.predecessor || '' },
+    adminObjectiveAnchorStart: { value: options.anchorStart || '2026-07-20' },
     adminObjectiveSaveStatus: { textContent: '' },
     saveAdminApprovedObjectiveButton: { disabled: false, textContent: 'Lưu thay đổi' }
   };
-  const calls = { close: 0, toast: 0, gantt: 0, weekly: 0, dashboardDelete: 0 };
+  const calls = { close: 0, toast: 0, gantt: 0, weekly: 0, dashboardDelete: 0, confirm: 0, post: 0, body: null };
   const context = {
     console,
     qltdAdminObjectiveEditState: {
       projectCode: 'P1', masterTaskCode: 'M1', loading: false, saving: false, error: '',
-      objective: { version: 'v1-current' }, requestId: 'ADMIN-OBJ-12345678'
+      objective: Object.assign({
+        version: 'v1-current', taskName: 'Mục tiêu cũ', durationDays: 5,
+        predecessor: '', anchorStart: '2026-07-20'
+      }, options.objective || {}), requestId: 'ADMIN-OBJ-12345678'
     },
     canAdmin: () => true,
     document: { getElementById: (id) => elements[id] || null },
-    window: { confirm: () => true },
+    window: { confirm: () => { calls.confirm += 1; return options.confirm !== false; } },
     getAdminObjectiveRequestId: () => 'ADMIN-OBJ-12345678',
-    postBackendJson: async () => postResult,
+    postBackendJson: async (body) => { calls.post += 1; calls.body = body; return postResult; },
     getBackendErrorMessage: () => 'API failure',
     closeAdminApprovedObjectiveEditor: () => { calls.close += 1; },
     showWeeklyToast: () => { calls.toast += 1; },
@@ -91,18 +96,35 @@ assert.equal(frontend.elements.adminObjectiveTaskName.value, 'Mục tiêu mới'
 assert.equal(frontend.elements.adminObjectiveSaveStatus.textContent, 'API failure');
 assert.equal(frontend.elements.saveAdminApprovedObjectiveButton.disabled, false);
 
-frontend = createFrontendSaveContext({ success: true, data: { scheduleChanged: true } });
+frontend = createFrontendSaveContext({ success: true, data: { scheduleChanged: false } });
 await frontend.context.save();
 assert.equal(frontend.calls.close, 1);
 assert.equal(frontend.calls.toast, 1);
 assert.equal(frontend.calls.dashboardDelete, 1);
 assert.equal(frontend.calls.gantt, 1);
 assert.equal(frontend.calls.weekly, 1);
+assert.equal(frontend.calls.confirm, 0, 'Task-name-only edits must not request a schedule confirmation.');
+assert.equal(frontend.calls.body.confirmRecalculateLinked, undefined);
+assert.equal(Object.hasOwn(frontend.calls.body, 'reason'), false);
+
+frontend = createFrontendSaveContext({ success: true, data: { scheduleChanged: true } }, { duration: '6' });
+await frontend.context.save();
+assert.equal(frontend.calls.confirm, 1);
+assert.equal(frontend.calls.post, 1);
+assert.equal(frontend.calls.body.confirmRecalculateLinked, true);
+
+frontend = createFrontendSaveContext({ success: true, data: { scheduleChanged: true } }, { duration: '6', confirm: false });
+await frontend.context.save();
+assert.equal(frontend.calls.post, 0, 'Declining recalculation must not call the update API.');
+assert.equal(frontend.calls.close, 0);
+assert.equal(frontend.elements.adminObjectiveDuration.value, '6');
 
 const saveFrontend = extractFunction(appSource, 'saveAdminApprovedObjective', 'renderWeeklyTaskList');
-assert.match(saveFrontend, /Việc sửa mục tiêu có thể làm thay đổi tiến độ các công việc liên quan\. Hệ thống sẽ tự động tính lại tiến độ dự án\. Bạn có xác nhận tiếp tục không\?/);
+assert.match(saveFrontend, /Thay đổi này có thể ảnh hưởng đến tiến độ các công việc liên kết\. Bạn có đồng ý tính lại tiến độ dự án không\?/);
 assert.match(saveFrontend, /admin_update_approved_objective/);
+assert.doesNotMatch(saveFrontend, /adminObjectiveReason|reason:/);
 assert.match(extractFunction(appSource, 'openAdminApprovedObjectiveEditor', 'getAdminObjectiveRequestId'), /admin_get_approved_objective/);
+assert.doesNotMatch(extractFunction(appSource, 'renderAdminApprovedObjectiveEditor', 'syncAdminObjectiveAnchorState'), /adminObjectiveReason|Quản trị mục tiêu đã phê duyệt/);
 
 function iso(value) {
   if (!value) return '';
@@ -139,6 +161,8 @@ function createBackendRuntime(options = {}) {
   const raw = Array(23).fill('');
   raw[0] = 'M1';
   raw[1] = '1';
+  raw[2] = 'BASELINE-IMMUTABLE';
+  raw[3] = 'BUDGET-IMMUTABLE';
   raw[6] = '1';
   raw[7] = 'Mục tiêu cũ';
   raw[8] = 'BQLDA';
@@ -153,7 +177,7 @@ function createBackendRuntime(options = {}) {
   raw[21] = '2026-07-18T00:00:00.000Z';
   raw[22] = 'Có';
   const sheet = new MockSheet(raw);
-  const calls = { engine: 0, cache: 0, dirty: 0, lock: 0, release: 0, flush: 0 };
+  const calls = { engine: 0, cache: 0, dirty: 0, lock: 0, release: 0, flush: 0, audits: [] };
   let role = options.role || 'ADMIN';
   let approvalStatus = options.approvalStatus || 'APPROVED';
   let recalcFails = false;
@@ -169,7 +193,7 @@ function createBackendRuntime(options = {}) {
   };
   const context = {
     console,
-    Logger: { log: () => {} },
+    Logger: { log: (entry) => { calls.audits.push(JSON.parse(entry)); } },
     Math,
     Date,
     QLTD_WEEKLY_TASK_APPROVAL_STATUS: { PENDING: 'PENDING', APPROVED: 'APPROVED', REJECTED: 'REJECTED' },
@@ -191,10 +215,14 @@ function createBackendRuntime(options = {}) {
     qltdWorkAppendTaskNote_: (before, note) => `${before || ''} | ${note}`,
     qltdWorkError_: (source, action, code, message, meta, warnings, extra) => ({ success: false, source, action, data: null, warnings: warnings || [], errors: [{ code, message, ...(extra || {}) }], meta }),
     qltdWorkOk_: (source, action, data, warnings, meta) => ({ success: true, source, action, data, warnings: warnings || [], errors: [], meta }),
-    qltdWeeklyTaskUpdatesRead_: () => ({ updates: [{
-      itemType: 'MASTER', itemId: 'M1', projectCode: 'P1', approvalStatus,
-      reviewedAt: '2026-07-18T09:00:00.000Z', reviewedBy: 'approver@example.com', rowNumber: 2
-    }], error: null }),
+    qltdWeeklyTaskUpdatesRead_: () => {
+      if (options.weeklyReadError) return { updates: [], error: { code: 'WEEKLY_TASK_UPDATES_NOT_READY', message: 'not ready' } };
+      if (options.noWeeklyUpdates) return { updates: [], error: null };
+      return { updates: [{
+        itemType: 'MASTER', itemId: 'M1', projectCode: 'P1', approvalStatus,
+        reviewedAt: '2026-07-18T09:00:00.000Z', reviewedBy: 'approver@example.com', rowNumber: 2
+      }], error: null };
+    },
     qltdScheduleGetProjectState_: () => ({ scheduleState: 'CLEAN' }),
     LockService: { getScriptLock: () => ({
       tryLock: () => { calls.lock += 1; return true; },
@@ -246,31 +274,62 @@ function updatePayload(runtime, patch = {}) {
     masterTaskCode: 'M1',
     requestId: 'ADMIN-OBJ-12345678',
     expectedVersion: runtime.api.version(runtime.raw),
-    reason: 'Điều chỉnh theo quyết định ADMIN',
     updates: { taskName: 'Mục tiêu mới', durationDays: 5, predecessor: '', anchorStart: '2026-07-18' },
     ...patch
   };
 }
 
-// Backend rejects every non-ADMIN role, missing reason, unapproved state and forbidden fields.
+// Backend keeps ADMIN/whitelist guards but does not depend on Weekly approval state.
 let backend = createBackendRuntime();
 for (const role of ['PMO', 'EDITOR', 'REPORTER', 'VIEWER']) {
   backend.setRole(role);
   assert.equal(backend.api.update(updatePayload(backend)).errorCode, 'FORBIDDEN');
 }
 backend.setRole('ADMIN');
-assert.equal(backend.api.update(updatePayload(backend, { reason: '' })).errorCode, 'ADJUSTMENT_REASON_REQUIRED');
-backend.setApprovalStatus('PENDING');
-assert.equal(backend.api.update(updatePayload(backend)).errorCode, 'OBJECTIVE_NOT_APPROVED');
-backend.setApprovalStatus('APPROVED');
+assert.equal(backend.api.validate(updatePayload(backend, { reason: '' })).error, null, 'Reason must be optional.');
 let result = backend.api.update(updatePayload(backend, { updates: { actualStart: '2026-07-01' } }));
 assert.equal(result.errorCode, 'OBJECTIVE_FIELDS_FORBIDDEN');
 assert.deepEqual(Array.from(result.errors[0].forbiddenFields), ['updates.actualStart']);
 
+for (const approvalStatus of ['', 'PENDING', 'REJECTED', 'APPROVED']) {
+  backend = createBackendRuntime({ approvalStatus });
+  result = backend.api.update(updatePayload(backend, {
+    requestId: `ADMIN-OBJ-WEEKLY-${approvalStatus || 'NONE'}-1`,
+    updates: { taskName: `Mục tiêu ${approvalStatus || 'NONE'}` }
+  }));
+  assert.equal(result.success, true, `ADMIN must edit with Weekly state ${approvalStatus || 'NONE'}`);
+  assert.equal(backend.calls.engine, 0);
+}
+
+backend = createBackendRuntime({ noWeeklyUpdates: true });
+result = backend.api.get({ projectCode: 'P1', masterTaskCode: 'M1' });
+assert.equal(result.success, true, 'GET must succeed without any Weekly update.');
+assert.equal(result.data.objective.approvalStatus, '');
+result = backend.api.update(updatePayload(backend, {
+  requestId: 'ADMIN-OBJ-NO-WEEKLY-1',
+  updates: { taskName: 'Không có Weekly update' }
+}));
+assert.equal(result.success, true, 'UPDATE taskName must succeed without any Weekly update.');
+assert.equal(backend.calls.engine, 0);
+
+backend = createBackendRuntime({ weeklyReadError: true });
+result = backend.api.get({ projectCode: 'P1', masterTaskCode: 'M1' });
+assert.equal(result.success, true, 'GET must remain available when optional Weekly metadata is unavailable.');
+
+// Schedule-driving fields require explicit confirmation before any write, dirty mark, cache invalidation, or engine call.
+backend = createBackendRuntime();
+const beforeRejectedScheduleEdit = backend.raw.slice();
+result = backend.api.update(updatePayload(backend));
+assert.equal(result.errorCode, 'SCHEDULE_RECALC_CONFIRMATION_REQUIRED');
+assert.deepEqual(backend.raw, beforeRejectedScheduleEdit);
+assert.equal(backend.calls.dirty, 0);
+assert.equal(backend.calls.engine, 0);
+assert.equal(backend.calls.cache, 0);
+
 // Schedule-driving edits write only whitelisted planning cells, run one recalc/cache and are idempotent.
 backend = createBackendRuntime();
-const protectedBefore = { code: backend.raw[0], ref: backend.raw[6], finish: backend.raw[12], status: backend.raw[17], actualStart: backend.raw[18], actualFinish: backend.raw[19], impact: backend.raw[22] };
-const firstPayload = updatePayload(backend);
+const protectedBefore = { code: backend.raw[0], ref: backend.raw[6], baseline: backend.raw[2], budget: backend.raw[3], finish: backend.raw[12], status: backend.raw[17], actualStart: backend.raw[18], actualFinish: backend.raw[19], impact: backend.raw[22] };
+const firstPayload = updatePayload(backend, { confirmRecalculateLinked: true });
 result = backend.api.update(firstPayload);
 assert.equal(result.success, true);
 assert.equal(result.data.scheduleChanged, true);
@@ -279,7 +338,10 @@ assert.equal(backend.calls.cache, 1);
 assert.equal(backend.calls.dirty, 1);
 assert.equal(backend.raw[7], 'Mục tiêu mới');
 assert.equal(backend.raw[9], 5);
-assert.deepEqual({ code: backend.raw[0], ref: backend.raw[6], finish: backend.raw[12], status: backend.raw[17], actualStart: backend.raw[18], actualFinish: backend.raw[19], impact: backend.raw[22] }, protectedBefore);
+assert.deepEqual({ code: backend.raw[0], ref: backend.raw[6], baseline: backend.raw[2], budget: backend.raw[3], finish: backend.raw[12], status: backend.raw[17], actualStart: backend.raw[18], actualFinish: backend.raw[19], impact: backend.raw[22] }, protectedBefore);
+assert.deepEqual(backend.calls.audits.at(-1).requestId, firstPayload.requestId);
+assert.equal(backend.calls.audits.at(-1).reason, 'ADMIN_DIRECT_EDIT');
+assert.deepEqual(Object.keys(backend.calls.audits.at(-1).beforeAfter).sort(), ['durationDays', 'taskName']);
 result = backend.api.update(firstPayload);
 assert.equal(result.success, true);
 assert.equal(result.data.idempotent, true);
@@ -312,7 +374,7 @@ assert.equal(backend.calls.engine, 0);
 // Recalculation failure never returns success and leaves a retryable WRITE marker.
 backend = createBackendRuntime();
 backend.setRecalcFails(true);
-const failingPayload = updatePayload(backend, { requestId: 'ADMIN-OBJ-FAIL-0001' });
+const failingPayload = updatePayload(backend, { requestId: 'ADMIN-OBJ-FAIL-0001', confirmRecalculateLinked: true });
 result = backend.api.update(failingPayload);
 assert.equal(result.success, false);
 assert.equal(result.errorCode, 'SCHEDULE_ENGINE_FAILED');
@@ -365,6 +427,8 @@ assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIV
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'ZONE_GROUP', sourceRow: 5 }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_ROW_TYPE_FORBIDDEN');
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 6 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_SOURCE_ROW_MISMATCH');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5, sourceRowNumber: 6 }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_SOURCE_ROW_MISMATCH');
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5 }]);
 assert.equal(resolver.resolve('P1', 'M2', 'test', {}).error.errorCode, 'MASTER_TASK_NOT_FOUND');

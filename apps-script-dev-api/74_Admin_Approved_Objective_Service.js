@@ -130,6 +130,10 @@ function qltdAdminObjectiveUpdate_(payload) {
 
     if (currentNote.indexOf(markers.scheduleWrite) !== -1 || currentNote.indexOf(markers.contentWrite) !== -1) {
       const schedulePending = currentNote.indexOf(markers.scheduleWrite) !== -1;
+      if (schedulePending && validation.confirmRecalculateLinked !== true) {
+        return qltdAdminObjectiveError_(action, 'SCHEDULE_RECALC_CONFIRMATION_REQUIRED', 'VALIDATION',
+          'Cần xác nhận tính lại tiến độ dự án trước khi sửa các trường ảnh hưởng tiến độ.', key.meta);
+      }
       return qltdAdminObjectiveResume_(action, resolved, approval.approval, auth, validation, schedulePending, key.meta);
     }
 
@@ -155,12 +159,17 @@ function qltdAdminObjectiveUpdate_(payload) {
     if (plan.scheduleChanged) {
       const dependencyCheck = qltdAdminObjectiveValidateDependencies_(resolved, plan.predecessor, action, key.meta);
       if (dependencyCheck.error) return dependencyCheck.error;
+      if (validation.confirmRecalculateLinked !== true) {
+        return qltdAdminObjectiveError_(action, 'SCHEDULE_RECALC_CONFIRMATION_REQUIRED', 'VALIDATION',
+          'Cần xác nhận tính lại tiến độ dự án trước khi sửa các trường ảnh hưởng tiến độ.', key.meta);
+      }
     }
 
     stage = 'MASTER_WRITE';
     qltdAdminObjectiveApplyPlan_(resolved, plan, auth.email, validation.reason, markers, validation.requestId);
     const verify = qltdAdminObjectiveVerifyPlan_(resolved, plan);
     if (!verify.success) {
+      qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, validation.requestId, plan.changes, verify, 'FAILED');
       return qltdAdminObjectiveError_(action, 'OBJECTIVE_VERIFY_FAILED', 'MASTER_VERIFY',
         'Không xác nhận được dữ liệu mục tiêu sau khi ghi.', key.meta, verify);
     }
@@ -180,7 +189,7 @@ function qltdAdminObjectiveUpdate_(payload) {
         action
       );
       if (!recalculation || recalculation.ok !== true) {
-        qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, plan.changes, recalculation, 'FAILED');
+        qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, validation.requestId, plan.changes, recalculation, 'FAILED');
         return qltdAdminObjectiveError_(action,
           recalculation && recalculation.errorCode || 'SCHEDULE_RECALCULATE_FAILED',
           recalculation && recalculation.stage || stage,
@@ -188,7 +197,7 @@ function qltdAdminObjectiveUpdate_(payload) {
       }
       qltdAdminObjectiveFinalize_(resolved, auth.email, markers.success);
       qltdAdminObjectiveRefreshRaw_(resolved);
-      qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, plan.changes, recalculation, 'SUCCESS');
+      qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, validation.requestId, plan.changes, recalculation, 'SUCCESS');
       return qltdAdminObjectiveSuccess_(action, resolved, approval.approval, validation.requestId, {
         idempotent: false,
         scheduleChanged: true,
@@ -200,14 +209,14 @@ function qltdAdminObjectiveUpdate_(payload) {
     stage = 'CACHE_INVALIDATE';
     const cacheResult = qltdGanttInvalidateCache_(key.projectCode);
     if (!cacheResult || cacheResult.success !== true) {
-      qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, plan.changes, cacheResult, 'FAILED');
+      qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, validation.requestId, plan.changes, cacheResult, 'FAILED');
       return qltdAdminObjectiveError_(action,
         cacheResult && cacheResult.code || 'GANTT_CACHE_INVALIDATE_FAILED', stage,
         'Đã ghi mục tiêu nhưng không thể làm mới cache Gantt.', key.meta);
     }
     qltdAdminObjectiveFinalize_(resolved, auth.email, markers.success);
     qltdAdminObjectiveRefreshRaw_(resolved);
-    qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, plan.changes, cacheResult, 'SUCCESS');
+    qltdAdminObjectiveAudit_(action, auth.email, key, validation.reason, validation.requestId, plan.changes, cacheResult, 'SUCCESS');
     return qltdAdminObjectiveSuccess_(action, resolved, approval.approval, validation.requestId, {
       idempotent: false,
       scheduleChanged: false,
@@ -245,7 +254,7 @@ function qltdAdminObjectiveValidatePayload_(payload, action, meta) {
   const allowedTopLevel = {
     action: true, email: true, actorEmail: true, idToken: true,
     projectCode: true, masterTaskCode: true, requestId: true,
-    expectedVersion: true, reason: true, updates: true
+    expectedVersion: true, reason: true, confirmRecalculateLinked: true, updates: true
   };
   const forbiddenFields = Object.keys(payload || {}).filter(function(key) { return !allowedTopLevel[key]; });
   const updates = payload && payload.updates;
@@ -263,9 +272,6 @@ function qltdAdminObjectiveValidatePayload_(payload, action, meta) {
     return { error: qltdAdminObjectiveError_(action, 'NO_EDIT_FIELDS', 'VALIDATION', 'Không có trường được phép sửa.', meta) };
   }
   const reason = String(payload && payload.reason || '').trim();
-  if (!reason) {
-    return { error: qltdAdminObjectiveError_(action, 'ADJUSTMENT_REASON_REQUIRED', 'VALIDATION', 'Lý do điều chỉnh là bắt buộc.', meta) };
-  }
   if (reason.length > 1000) {
     return { error: qltdAdminObjectiveError_(action, 'ADJUSTMENT_REASON_TOO_LONG', 'VALIDATION', 'Lý do điều chỉnh quá dài.', meta) };
   }
@@ -275,7 +281,8 @@ function qltdAdminObjectiveValidatePayload_(payload, action, meta) {
   }
   return {
     updates: updates,
-    reason: reason,
+    reason: reason || 'ADMIN_DIRECT_EDIT',
+    confirmRecalculateLinked: payload && payload.confirmRecalculateLinked === true,
     requestId: requestId,
     expectedVersion: String(payload && payload.expectedVersion || '').trim(),
     error: null
@@ -284,7 +291,7 @@ function qltdAdminObjectiveValidatePayload_(payload, action, meta) {
 
 function qltdAdminObjectiveResolveTarget_(projectCode, masterTaskCode, action, meta) {
   const project = qltdProjectsGetByCode_(projectCode);
-  if (!project || project.status && String(project.status).trim().toUpperCase() !== 'ACTIVE') {
+  if (!project || String(project.status || '').trim().toUpperCase() !== 'ACTIVE') {
     return { error: qltdAdminObjectiveError_(action, 'PROJECT_NOT_FOUND', 'PROJECT_RESOLVE', 'Không tìm thấy dự án đang hoạt động.', meta) };
   }
   if (!String(project.masterSpreadsheetId || '').trim()) {
@@ -332,7 +339,12 @@ function qltdAdminObjectiveResolveTarget_(projectCode, masterTaskCode, action, m
     return { error: qltdAdminObjectiveError_(action, 'OBJECTIVE_ROW_TYPE_FORBIDDEN', 'MASTER_LOOKUP',
       'Chỉ mục tiêu MASTER, không phải dòng nhóm hay nhiệm vụ chi tiết, mới được sửa.', meta, { rowType: rowType }) };
   }
-  if (Number(sourceTask.sourceRow || 0) !== Number(lookup.task.rowNumber || 0)) {
+  const targetRowNumber = Number(lookup.task.rowNumber || 0);
+  const sourceRow = Number(sourceTask.sourceRow || 0);
+  const sourceRowNumber = Number(sourceTask.sourceRowNumber || 0);
+  if ((!sourceRow && !sourceRowNumber) ||
+      (sourceRow && sourceRow !== targetRowNumber) ||
+      (sourceRowNumber && sourceRowNumber !== targetRowNumber)) {
     return { error: qltdAdminObjectiveError_(action, 'OBJECTIVE_SOURCE_ROW_MISMATCH', 'MASTER_LOOKUP',
       'Dữ liệu nguồn không map về cùng một dòng MASTER.', meta) };
   }
@@ -349,26 +361,23 @@ function qltdAdminObjectiveResolveTarget_(projectCode, masterTaskCode, action, m
 }
 
 function qltdAdminObjectiveResolveApproval_(projectCode, masterTaskCode, action, meta) {
-  const read = qltdWeeklyTaskUpdatesRead_();
-  if (read.error) {
-    return { error: qltdAdminObjectiveError_(action, read.error.code, 'APPROVAL_READ', read.error.message, meta) };
+  let read;
+  try {
+    read = typeof qltdWeeklyTaskUpdatesRead_ === 'function' ? qltdWeeklyTaskUpdatesRead_() : null;
+  } catch (error) {
+    read = null;
   }
+  if (!read || read.error) return { approval: null, error: null };
   const candidates = (read.updates || []).filter(function(update) {
     return update.itemType === 'MASTER' &&
       qltdScheduleProjectCode_(update.projectCode) === projectCode &&
-      qltdWeeklyTaskUpdatesNormalizeTaskCode_(update.itemId) === masterTaskCode &&
-      !!update.approvalStatus;
+      qltdWeeklyTaskUpdatesNormalizeTaskCode_(update.itemId) === masterTaskCode;
   }).sort(function(left, right) {
     const leftTime = Date.parse(left.reviewedAt || left.updatedAt || '') || 0;
     const rightTime = Date.parse(right.reviewedAt || right.updatedAt || '') || 0;
     return rightTime - leftTime || Number(right.rowNumber || 0) - Number(left.rowNumber || 0);
   });
-  const approval = candidates[0];
-  if (!approval || approval.approvalStatus !== QLTD_WEEKLY_TASK_APPROVAL_STATUS.APPROVED) {
-    return { error: qltdAdminObjectiveError_(action, 'OBJECTIVE_NOT_APPROVED', 'APPROVAL_READ',
-      'Mục tiêu chưa có trạng thái APPROVED hợp lệ.', meta, { currentApprovalStatus: approval && approval.approvalStatus || '' }) };
-  }
-  return { approval: approval, error: null };
+  return { approval: candidates[0] || null, error: null };
 }
 
 function qltdAdminObjectiveBuildDto_(resolved, approval) {
@@ -510,7 +519,7 @@ function qltdAdminObjectiveApplyPlan_(resolved, plan, email, reason, markers, re
   const marker = plan.scheduleChanged ? markers.scheduleWrite : markers.contentWrite;
   const auditText = [
     marker,
-    'ADMIN sửa mục tiêu đã phê duyệt',
+    'ADMIN sửa mục tiêu',
     'RequestId: ' + requestId,
     'Lý do: ' + reason,
     'Trường thay đổi: ' + Object.keys(plan.changes).join(', '),
@@ -625,13 +634,14 @@ function qltdAdminObjectiveDateValue_(isoDate) {
   return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
 }
 
-function qltdAdminObjectiveAudit_(action, email, key, reason, changes, recalculation, result) {
+function qltdAdminObjectiveAudit_(action, email, key, reason, requestId, changes, recalculation, result) {
   Logger.log(JSON.stringify({
     action: action,
     projectCode: key.projectCode,
     masterTaskCode: key.masterTaskCode,
     editedBy: email,
     editedAt: qltdWorkNowIso_(),
+    requestId: requestId,
     reason: reason,
     changedFields: Object.keys(changes || {}),
     beforeAfter: changes || {},

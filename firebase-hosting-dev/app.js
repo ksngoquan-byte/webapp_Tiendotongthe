@@ -4576,7 +4576,6 @@ function canEditApprovedObjective(item, saved, context, capabilities = {}) {
   const rowType = String(item?.sourceRowType || '').trim().toUpperCase();
   return canAdmin() && role === 'ADMIN' &&
     item?.itemType === 'MASTER' &&
-    saved?.approvalStatus === 'APPROVED' &&
     item?.sourceMappingUnique === true &&
     ['TASK', 'MILESTONE', 'SCHEDULED_GROUP'].includes(rowType) &&
     !!String(context?.projectCode || '').trim() &&
@@ -4632,7 +4631,7 @@ function renderAdminApprovedObjectiveEditor() {
   } else {
     const objective = state.objective || {};
     const hasPredecessor = !!String(objective.predecessor || '').trim();
-    content.innerHTML = `<div class="detail-status-header"><div><span>Quản trị mục tiêu đã phê duyệt</span><h2 id="adminObjectiveEditorTitle">${escapeHtml(objective.wbs ? `${objective.wbs} · ${objective.taskName}` : objective.taskName || objective.masterTaskCode)}</h2><small>${escapeHtml(objective.projectCode || '')} · ${escapeHtml(objective.masterTaskCode || '')} · APPROVED</small></div><button type="button" class="detail-status-close" data-admin-objective-close aria-label="Đóng" ${state.saving ? 'disabled' : ''}>×</button></div>
+    content.innerHTML = `<div class="detail-status-header"><div><span>Quản trị mục tiêu</span><h2 id="adminObjectiveEditorTitle">${escapeHtml(objective.wbs ? `${objective.wbs} · ${objective.taskName}` : objective.taskName || objective.masterTaskCode)}</h2><small>${escapeHtml(objective.projectCode || '')} · ${escapeHtml(objective.masterTaskCode || '')}</small></div><button type="button" class="detail-status-close" data-admin-objective-close aria-label="Đóng" ${state.saving ? 'disabled' : ''}>×</button></div>
       <section class="weekly-inline-form">
         <div class="weekly-form-section">
           <div class="weekly-form-section-title"><span>THÔNG TIN ĐƯỢC PHÉP ĐIỀU CHỈNH</span></div>
@@ -4643,7 +4642,6 @@ function renderAdminApprovedObjectiveEditor() {
             <label class="weekly-update-field">Ngày bắt đầu neo<input id="adminObjectiveAnchorStart" type="date" value="${escapeHtml(objective.anchorStart || '')}" ${hasPredecessor ? 'disabled' : ''}><small id="adminObjectiveAnchorHint">${hasPredecessor ? 'Có tiền nhiệm: Schedule Engine tự tính ngày bắt đầu/kết thúc.' : 'Không có tiền nhiệm: ngày bắt đầu neo là bắt buộc.'}</small></label>
             <label class="weekly-update-field">Ngày kết thúc hiện tại<input type="date" value="${escapeHtml(objective.planFinish || '')}" disabled><small>Chỉ đọc; Schedule Engine tự tính.</small></label>
           </div>
-          <label class="weekly-update-field">Lý do điều chỉnh<textarea id="adminObjectiveReason" maxlength="1000" required placeholder="Bắt buộc nhập lý do điều chỉnh"></textarea></label>
         </div>
         <div class="weekly-update-actions"><button type="button" class="secondary-button" data-admin-objective-close ${state.saving ? 'disabled' : ''}>Hủy</button><div><button id="saveAdminApprovedObjectiveButton" type="button" class="weekly-update-button" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Đang lưu...' : 'Lưu thay đổi'}</button><span id="adminObjectiveSaveStatus" class="weekly-update-note">${escapeHtml(state.error || '')}</span></div></div>
       </section>`;
@@ -4686,8 +4684,8 @@ async function openAdminApprovedObjectiveEditor(projectCode, masterTaskCode) {
     }, { auth: true });
     if (!result?.success) throw new Error(getBackendErrorMessage(result, 'Không tải được dữ liệu mục tiêu mới nhất.'));
     const objective = result.data?.objective || result.objective;
-    if (!objective || objective.approvalStatus !== 'APPROVED' || objective.projectCode !== code || objective.masterTaskCode !== taskCode) {
-      throw new Error('Backend không xác nhận được mục tiêu APPROVED cần sửa.');
+    if (!objective || objective.projectCode !== code || objective.masterTaskCode !== taskCode) {
+      throw new Error('Backend không xác nhận được mục tiêu cần sửa.');
     }
     qltdAdminObjectiveEditState = { projectCode: code, masterTaskCode: taskCode, loading: false, saving: false, error: '', objective, requestId: '' };
   } catch (error) {
@@ -4710,15 +4708,16 @@ async function saveAdminApprovedObjective() {
   const durationDays = Number(document.getElementById('adminObjectiveDuration')?.value || 0);
   const predecessor = String(document.getElementById('adminObjectivePredecessor')?.value || '').trim();
   const anchorStart = String(document.getElementById('adminObjectiveAnchorStart')?.value || '').trim();
-  const reason = String(document.getElementById('adminObjectiveReason')?.value || '').trim();
   const status = document.getElementById('adminObjectiveSaveStatus');
   const button = document.getElementById('saveAdminApprovedObjectiveButton');
   if (!taskName) { if (status) status.textContent = 'Tên/nội dung mục tiêu là bắt buộc.'; return; }
   if (!Number.isInteger(durationDays) || durationDays <= 0) { if (status) status.textContent = 'Số ngày kế hoạch phải là số nguyên dương.'; return; }
   if (!predecessor && !anchorStart) { if (status) status.textContent = 'Mục tiêu không có tiền nhiệm phải có ngày bắt đầu neo.'; return; }
-  if (!reason) { if (status) status.textContent = 'Lý do điều chỉnh là bắt buộc.'; return; }
-  const confirmed = window.confirm('Việc sửa mục tiêu có thể làm thay đổi tiến độ các công việc liên quan. Hệ thống sẽ tự động tính lại tiến độ dự án. Bạn có xác nhận tiếp tục không?');
-  if (!confirmed) return;
+  const current = state.objective || {};
+  const scheduleChanged = durationDays !== Number(current.durationDays || 0) ||
+    predecessor !== String(current.predecessor || '').trim() ||
+    (!predecessor && anchorStart !== String(current.anchorStart || '').trim());
+  if (scheduleChanged && !window.confirm('Thay đổi này có thể ảnh hưởng đến tiến độ các công việc liên kết. Bạn có đồng ý tính lại tiến độ dự án không?')) return;
 
   state.saving = true;
   state.error = '';
@@ -4730,9 +4729,9 @@ async function saveAdminApprovedObjective() {
     masterTaskCode: state.masterTaskCode,
     requestId: getAdminObjectiveRequestId(),
     expectedVersion: state.objective.version,
-    reason,
     updates: { taskName, durationDays, predecessor, anchorStart }
   };
+  if (scheduleChanged) body.confirmRecalculateLinked = true;
   let result;
   try {
     result = await postBackendJson(body);
