@@ -340,13 +340,24 @@ function qltdAdminObjectiveResolveTarget_(projectCode, masterTaskCode, action, m
       'Chỉ mục tiêu MASTER, không phải dòng nhóm hay nhiệm vụ chi tiết, mới được sửa.', meta, { rowType: rowType }) };
   }
   const targetRowNumber = Number(lookup.task.rowNumber || 0);
-  const sourceRow = Number(sourceTask.sourceRow || 0);
+  const sourceRowPublic = Number(sourceTask.sourceRow || 0);
   const sourceRowNumber = Number(sourceTask.sourceRowNumber || 0);
-  if ((!sourceRow && !sourceRowNumber) ||
-      (sourceRow && sourceRow !== targetRowNumber) ||
-      (sourceRowNumber && sourceRowNumber !== targetRowNumber)) {
+  const rawRowNumber = Number(sourceTask.rawRowNumber || 0);
+  const sourceRow = Number(
+    sourceTask.sourceRow ||
+    sourceTask.sourceRowNumber ||
+    sourceTask.rawRowNumber ||
+    0
+  );
+  if (!sourceRow || sourceRow !== targetRowNumber) {
     return { error: qltdAdminObjectiveError_(action, 'OBJECTIVE_SOURCE_ROW_MISMATCH', 'MASTER_LOOKUP',
-      'Dữ liệu nguồn không map về cùng một dòng MASTER.', meta) };
+      'Dữ liệu nguồn không map về cùng một dòng MASTER.', meta, {
+        targetRowNumber: targetRowNumber,
+        sourceRow: sourceRow,
+        sourceRowPublic: sourceRowPublic,
+        sourceRowNumber: sourceRowNumber,
+        rawRowNumber: rawRowNumber
+      }) };
   }
   return {
     project: project,

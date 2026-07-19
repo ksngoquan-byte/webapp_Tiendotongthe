@@ -5,6 +5,7 @@ import vm from 'node:vm';
 const appSource = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 const apiSource = fs.readFileSync(new URL('../apps-script-dev-api/28_DEV_API.js', import.meta.url), 'utf8');
 const serviceSource = fs.readFileSync(new URL('../apps-script-dev-api/74_Admin_Approved_Objective_Service.js', import.meta.url), 'utf8');
+const taskContextSource = fs.readFileSync(new URL('../apps-script-dev-api/35_TASK_CONTEXT_RESOLVER.js', import.meta.url), 'utf8');
 
 function extractFunction(source, name, nextName) {
   const asyncStart = source.indexOf(`async function ${name}`);
@@ -411,7 +412,23 @@ this.resolve = qltdAdminObjectiveResolveTarget_;`, context);
   return context;
 }
 
-let resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5 }]);
+// The public Gantt DTO intentionally removes sourceRow, but retains rawRowNumber.
+const publicDatasetContext = {};
+vm.createContext(publicDatasetContext);
+vm.runInContext(`${extractFunction(taskContextSource, 'qltdTaskContextBuildPublicDataset_', 'qltdTaskContextRawValue_')}
+this.buildPublicDataset = qltdTaskContextBuildPublicDataset_;`, publicDatasetContext);
+const pipelinePublicTask = publicDatasetContext.buildPublicDataset([{
+  code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5, rawRowNumber: 5
+}])[0];
+assert.equal(Object.hasOwn(pipelinePublicTask, 'sourceRow'), false);
+assert.equal(pipelinePublicTask.rawRowNumber, 5);
+
+let resolver = createResolverRuntime([pipelinePublicTask]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'TASK',
+  'rawRowNumber must resolve the source row after the public DTO removes sourceRow.');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'TASK');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRowNumber: 5 }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'TASK');
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'MILESTONE', sourceRow: 5 }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'MILESTONE');
@@ -429,6 +446,10 @@ assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIV
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 6 }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_SOURCE_ROW_MISMATCH');
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5, sourceRowNumber: 6 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).rowType, 'TASK', 'sourceRow must take precedence over sourceRowNumber.');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', rawRowNumber: 6 }]);
+assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_SOURCE_ROW_MISMATCH');
+resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK' }]);
 assert.equal(resolver.resolve('P1', 'M1', 'test', {}).error.errorCode, 'OBJECTIVE_SOURCE_ROW_MISMATCH');
 resolver = createResolverRuntime([{ code: 'M1', id: '1', rowType: 'TASK', sourceRow: 5 }]);
 assert.equal(resolver.resolve('P1', 'M2', 'test', {}).error.errorCode, 'MASTER_TASK_NOT_FOUND');
