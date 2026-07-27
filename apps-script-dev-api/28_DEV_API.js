@@ -185,6 +185,10 @@ function qltdDevApiHandleGet(e) {
     return qltdDevApiJson_(qltdGanttBaselineGet_(params));
   }
 
+  if (action === 'ganttbaselineversions') {
+    return qltdDevApiJson_(qltdGanttBaselineVersionsGet_(params));
+  }
+
   if (action === 'dashboardsummary') {
     return qltdDevApiDashboardSummary_(params);
   }

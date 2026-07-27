@@ -159,6 +159,86 @@ function defaultHistoryRows(activeRows = [
   return [HISTORY_HEADERS.slice(), ...activeRows];
 }
 
+function historicalSnapshotRows({
+  version,
+  type = 'DIEU_CHINH',
+  createdAt,
+  taskRows
+}) {
+  const rows = taskRows || [
+    baselineTask({
+      version,
+      type,
+      status: 'ACTIVE',
+      createdAt,
+      refId: version.slice(2),
+      taskCode: `${version}-TASK`,
+      text: `Công việc ${version}`
+    })
+  ];
+  return defaultBaselineRows(rows, {
+    version,
+    type,
+    createdAt,
+    taskCount: rows.length,
+    status: 'ACTIVE'
+  });
+}
+
+function historicalVersionsFixture() {
+  const definitions = [
+    {
+      version: 'BL001',
+      type: 'LAN_DAU',
+      createdAt: '2026-01-01T02:00:00.000Z',
+      sourceSheet: 'KH_goc_BL001_01012026'
+    },
+    {
+      version: 'BL002',
+      type: 'DIEU_CHINH',
+      createdAt: '2026-02-01T02:00:00.000Z',
+      sourceSheet: 'KH_goc_BL002_01022026'
+    },
+    {
+      version: 'BL003',
+      type: 'DIEU_CHINH',
+      createdAt: '2026-03-01T02:00:00.000Z',
+      sourceSheet: 'KH_goc_BL003_01032026'
+    },
+    {
+      version: 'BL004',
+      type: 'DIEU_CHINH',
+      createdAt: '2026-04-01T02:00:00.000Z',
+      sourceSheet: 'KH_goc_BL004_01042026'
+    }
+  ];
+  const snapshotRowsByName = {};
+  const historyRows = definitions.map((definition) => {
+    snapshotRowsByName[definition.sourceSheet] = historicalSnapshotRows(definition);
+    return [
+      definition.version,
+      definition.sourceSheet,
+      'Đã thay thế',
+      definition.createdAt,
+      1,
+      ''
+    ];
+  });
+  historyRows.push([
+    'BL005',
+    'KH_goc_BL005_01062026',
+    'Đang áp dụng',
+    '2026-06-01T02:00:00.000Z',
+    2,
+    ''
+  ]);
+  return {
+    definitions,
+    historyRows: defaultHistoryRows(historyRows),
+    snapshotRowsByName
+  };
+}
+
 function rowHasValue(row) {
   return Array.isArray(row) && row.some((value) => {
     return value !== null && value !== undefined && String(value).trim() !== '';
@@ -300,6 +380,14 @@ function createHarness(options = {}) {
   const masterSheets = {};
   if (baselineSheet) masterSheets.Ke_hoach_goc = baselineSheet;
   if (historySheet) masterSheets.Ke_hoach_goc_history = historySheet;
+  Object.entries(options.snapshotRowsByName || {}).forEach(([sheetName, rows]) => {
+    masterSheets[sheetName] = makeSheet(
+      rows,
+      counters,
+      writeCalls,
+      sheetName
+    );
+  });
   const masterSpreadsheet = makeSpreadsheet(
     masterSheets,
     counters,
@@ -371,6 +459,7 @@ function createHarness(options = {}) {
     `${serviceSource}
 this.api = {
   get: qltdGanttBaselineGet_,
+  versions: qltdGanttBaselineVersionsGet_,
   readActive: qltdGanttBaselineReadActive_,
   buildRecords: qltdGanttBaselineBuildRecords_
 };`,
@@ -424,6 +513,32 @@ this.dispatch = qltdDevApiHandleGet;`,
   });
   assert.equal(calls, 1);
   assert.deepEqual(response, { success: true, projectCode: 'P1' });
+});
+
+test('dispatcher accepts ganttBaselineVersions without case sensitivity', () => {
+  let calls = 0;
+  const context = {
+    console,
+    qltdGanttBaselineVersionsGet_(params) {
+      calls += 1;
+      return { success: true, projectCode: params.projectCode, versions: [] };
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    `${dispatcherSource}
+qltdDevApiJson_ = function(payload) { return payload; };
+this.dispatch = qltdDevApiHandleGet;`,
+    context
+  );
+  const response = context.dispatch({
+    parameter: {
+      action: 'GaNtTbAsElInEvErSiOnS',
+      projectCode: 'P1'
+    }
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(response, { success: true, projectCode: 'P1', versions: [] });
 });
 
 test('missing, invalid and expired tokens keep controlled auth codes', () => {
@@ -528,6 +643,277 @@ test('one active version returns the stable read-only contract', () => {
   assert.equal(response.source, 'gantt_baseline_service');
 });
 
+test('omitting version still returns the ACTIVE BL005 baseline', () => {
+  const fixture = historicalVersionsFixture();
+  const { api } = createHarness(fixture);
+  const response = api.get(request());
+  assert.equal(response.success, true);
+  assert.equal(response.baseline.version, 'BL005');
+  assert.equal(response.baseline.status, 'ACTIVE');
+  assert.equal(response.sourceSheet, 'Ke_hoach_goc');
+});
+
+test('requesting the active version explicitly still reads Ke_hoach_goc', () => {
+  const fixture = historicalVersionsFixture();
+  const { api } = createHarness(fixture);
+  const response = api.get(request({ version: 'BL005' }));
+  assert.equal(response.success, true);
+  assert.equal(response.baseline.version, 'BL005');
+  assert.equal(response.baseline.status, 'ACTIVE');
+  assert.equal(response.sourceSheet, 'Ke_hoach_goc');
+  assert.equal(response.data.length, 2);
+});
+
+test('versions lists BL001 through BL005 with BL005 as the active version', () => {
+  const fixture = historicalVersionsFixture();
+  const { api } = createHarness(fixture);
+  const response = api.versions(request({ action: 'ganttBaselineVersions' }));
+  assert.equal(response.success, true);
+  assert.equal(response.activeVersion, 'BL005');
+  assert.deepEqual(
+    Array.from(response.versions, (entry) => entry.version),
+    ['BL005', 'BL004', 'BL003', 'BL002', 'BL001']
+  );
+  assert.deepEqual(
+    Array.from(response.versions, (entry) => entry.status),
+    ['ACTIVE', 'REPLACED', 'REPLACED', 'REPLACED', 'REPLACED_INITIAL']
+  );
+  assert.ok(response.versions.every((entry) => entry.available === true));
+  assert.equal(response.versions[0].sourceSheet, 'Ke_hoach_goc');
+  assert.equal(response.versions[1].sourceSheet, 'KH_goc_BL004_01042026');
+});
+
+test('BL001 and BL004 are read only from their history-proven snapshots', () => {
+  const fixture = historicalVersionsFixture();
+  const { api } = createHarness(fixture);
+
+  const initial = api.get(request({ version: 'bl001' }));
+  assert.equal(initial.success, true);
+  assert.equal(initial.baseline.version, 'BL001');
+  assert.equal(initial.baseline.type, 'LAN_DAU');
+  assert.equal(initial.baseline.status, 'REPLACED_INITIAL');
+  assert.equal(initial.sourceSheet, 'KH_goc_BL001_01012026');
+  assert.equal(initial.data[0].taskCode, 'BL001-TASK');
+
+  const adjusted = api.get(request({ version: 'BL004' }));
+  assert.equal(adjusted.success, true);
+  assert.equal(adjusted.baseline.version, 'BL004');
+  assert.equal(adjusted.baseline.type, 'DIEU_CHINH');
+  assert.equal(adjusted.baseline.status, 'REPLACED');
+  assert.equal(adjusted.sourceSheet, 'KH_goc_BL004_01042026');
+  assert.equal(adjusted.data[0].taskCode, 'BL004-TASK');
+});
+
+test('a missing requested version never falls back to ACTIVE', () => {
+  const fixture = historicalVersionsFixture();
+  const { api } = createHarness(fixture);
+  const response = api.get(request({ version: 'BL999' }));
+  assert.equal(response.success, false);
+  assert.equal(response.errorCode, 'BASELINE_VERSION_NOT_FOUND');
+  assert.equal(response.requestedVersion, 'BL999');
+  assert.equal(response.baseline, null);
+});
+
+test('an explicitly supplied malformed or blank version is rejected before auth or Sheets', () => {
+  const { api, counters } = createHarness();
+  assert.equal(
+    api.get(request({ version: 'BL-001', idToken: '' })).errorCode,
+    'BASELINE_VERSION_INVALID'
+  );
+  assert.equal(api.get(request({ version: '' })).errorCode, 'BASELINE_VERSION_INVALID');
+  assert.equal(counters['Projects.getDataRange'] || 0, 0);
+});
+
+test('history version with a missing snapshot is listed unavailable and direct read is controlled', () => {
+  const fixture = historicalVersionsFixture();
+  delete fixture.snapshotRowsByName.KH_goc_BL004_01042026;
+  const { api } = createHarness(fixture);
+
+  const listResponse = api.versions(request({ action: 'ganttBaselineVersions' }));
+  const listed = listResponse.versions.find((entry) => entry.version === 'BL004');
+  assert.deepEqual(plain(listed), {
+    version: 'BL004',
+    type: '',
+    status: 'UNAVAILABLE',
+    createdAt: '2026-04-01T02:00:00.000Z',
+    taskCount: 1,
+    available: false,
+    sourceSheet: 'KH_goc_BL004_01042026'
+  });
+
+  const directResponse = api.get(request({ version: 'BL004' }));
+  assert.equal(directResponse.errorCode, 'BASELINE_VERSION_NOT_AVAILABLE');
+  assert.equal(directResponse.reasonCode, 'BASELINE_SNAPSHOT_MISSING');
+  assert.equal(directResponse.sourceSheet, 'KH_goc_BL004_01042026');
+});
+
+test('snapshot version mismatch with history fails closed', () => {
+  const fixture = historicalVersionsFixture();
+  fixture.snapshotRowsByName.KH_goc_BL004_01042026 = historicalSnapshotRows({
+    version: 'BL003',
+    createdAt: '2026-04-01T02:00:00.000Z'
+  });
+  const { api } = createHarness(fixture);
+
+  const directResponse = api.get(request({ version: 'BL004' }));
+  assert.equal(directResponse.errorCode, 'BASELINE_VERSION_NOT_AVAILABLE');
+  assert.equal(directResponse.reasonCode, 'BASELINE_SNAPSHOT_METADATA_MISMATCH');
+
+  const listResponse = api.versions(request({ action: 'ganttBaselineVersions' }));
+  const listed = listResponse.versions.find((entry) => entry.version === 'BL004');
+  assert.equal(listed.available, false);
+  assert.equal(listed.status, 'UNAVAILABLE');
+});
+
+test('historical snapshot with header drift is unavailable', () => {
+  const fixture = historicalVersionsFixture();
+  const rows = fixture.snapshotRowsByName.KH_goc_BL004_01042026;
+  [rows[3][0], rows[3][1]] = [rows[3][1], rows[3][0]];
+  const { api } = createHarness(fixture);
+  const response = api.get(request({ version: 'BL004' }));
+  assert.equal(response.errorCode, 'BASELINE_VERSION_NOT_AVAILABLE');
+  assert.equal(response.reasonCode, 'BASELINE_SNAPSHOT_SCHEMA_INVALID');
+});
+
+test('historical duplicate taskCode and ref records are preserved and diagnosed', () => {
+  const fixture = historicalVersionsFixture();
+  const createdAt = '2026-04-01T02:00:00.000Z';
+  const duplicateRows = [
+    baselineTask({
+      version: 'BL004',
+      createdAt,
+      refId: '0047',
+      taskCode: 'CV-DUP'
+    }),
+    baselineTask({
+      version: 'BL004',
+      createdAt,
+      refId: '0047',
+      taskCode: 'cv-dup'
+    })
+  ];
+  fixture.snapshotRowsByName.KH_goc_BL004_01042026 = historicalSnapshotRows({
+    version: 'BL004',
+    createdAt,
+    taskRows: duplicateRows
+  });
+  fixture.historyRows[4][4] = 2;
+  const { api } = createHarness(fixture);
+  const response = api.get(request({ version: 'BL004' }));
+  assert.equal(response.success, true);
+  assert.equal(response.data.length, 2);
+  assert.deepEqual(Array.from(response.diagnostics.duplicateTaskCodes), ['CV-DUP']);
+  assert.deepEqual(Array.from(response.diagnostics.duplicateRefs), ['0047']);
+});
+
+test('historical snapshot with an invalid date is unavailable', () => {
+  const fixture = historicalVersionsFixture();
+  fixture.snapshotRowsByName.KH_goc_BL004_01042026 = historicalSnapshotRows({
+    version: 'BL004',
+    createdAt: '2026-04-01T02:00:00.000Z',
+    taskRows: [
+      baselineTask({
+        version: 'BL004',
+        createdAt: '2026-04-01T02:00:00.000Z',
+        start: '2026-02-30'
+      })
+    ]
+  });
+  const { api } = createHarness(fixture);
+  const response = api.get(request({ version: 'BL004' }));
+  assert.equal(response.errorCode, 'BASELINE_VERSION_NOT_AVAILABLE');
+  assert.equal(response.reasonCode, 'BASELINE_SNAPSHOT_DATA_INVALID');
+});
+
+test('versioned and versions APIs reuse the existing auth and project visibility policy', () => {
+  const fixture = historicalVersionsFixture();
+  const denied = createHarness({
+    ...fixture,
+    denyProjectVisibility: true
+  }).api;
+  assert.equal(
+    denied.get(request({ version: 'BL001' })).errorCode,
+    'PROJECT_ACCESS_DENIED'
+  );
+  assert.equal(
+    denied.versions(request({ action: 'ganttBaselineVersions' })).errorCode,
+    'PROJECT_ACCESS_DENIED'
+  );
+
+  const unauthenticated = createHarness(fixture).api;
+  assert.equal(
+    unauthenticated.versions(request({
+      action: 'ganttBaselineVersions',
+      idToken: ''
+    })).errorCode,
+    'ID_TOKEN_REQUIRED'
+  );
+});
+
+test('active baseline remains readable when history is absent', () => {
+  const { api } = createHarness({ historySheetMissing: true });
+  const active = api.get(request());
+  assert.equal(active.success, true);
+  assert.equal(active.baseline.version, 'BL005');
+
+  const listResponse = api.versions(request({ action: 'ganttBaselineVersions' }));
+  assert.equal(listResponse.activeVersion, 'BL005');
+  assert.deepEqual(
+    Array.from(listResponse.versions, (entry) => entry.version),
+    ['BL005']
+  );
+
+  const historical = api.get(request({ version: 'BL001' }));
+  assert.equal(historical.errorCode, 'BASELINE_VERSION_NOT_FOUND');
+});
+
+test('history is not used as a fallback when ACTIVE baseline data is absent', () => {
+  const fixture = historicalVersionsFixture();
+  const noActiveRows = defaultBaselineRows([
+    baselineTask({ status: 'REPLACED' })
+  ], { taskCount: 1 });
+  const { api } = createHarness({
+    ...fixture,
+    baselineRows: noActiveRows
+  });
+  assert.equal(
+    api.get(request({ version: 'BL001' })).errorCode,
+    'BASELINE_ACTIVE_NOT_FOUND'
+  );
+  assert.equal(
+    api.versions(request({ action: 'ganttBaselineVersions' })).errorCode,
+    'BASELINE_ACTIVE_NOT_FOUND'
+  );
+});
+
+test('historical reads are batched and never call a write-capable surface', () => {
+  const fixture = historicalVersionsFixture();
+  const directHarness = createHarness(fixture);
+  const direct = directHarness.api.get(request({ version: 'BL004' }));
+  assert.equal(direct.success, true);
+  assert.equal(directHarness.counters['Ke_hoach_goc.getRange'], 1);
+  assert.equal(directHarness.counters['Ke_hoach_goc_history.getDataRange'], 1);
+  assert.equal(directHarness.counters['KH_goc_BL004_01042026.getRange'], 1);
+  assert.equal(directHarness.counters['KH_goc_BL004_01042026.range.getValues'], 1);
+  assert.deepEqual(directHarness.writeCalls, []);
+
+  const listHarness = createHarness(historicalVersionsFixture());
+  const listResponse = listHarness.api.versions(
+    request({ action: 'ganttBaselineVersions' })
+  );
+  assert.equal(listResponse.success, true);
+  assert.equal(listHarness.counters['Ke_hoach_goc.getRange'], 1);
+  assert.equal(listHarness.counters['Ke_hoach_goc_history.getDataRange'], 1);
+  ['BL001', 'BL002', 'BL003', 'BL004'].forEach((version) => {
+    const definition = historicalVersionsFixture().definitions.find(
+      (entry) => entry.version === version
+    );
+    assert.equal(listHarness.counters[`${definition.sourceSheet}.getRange`], 1);
+    assert.equal(listHarness.counters[`${definition.sourceSheet}.range.getValues`], 1);
+  });
+  assert.deepEqual(listHarness.writeCalls, []);
+});
+
 test('date serialization uses the script timezone without shifting the calendar day', () => {
   const dateAtVietnamMidnight = new Date('2026-06-11T17:00:00.000Z');
   const rows = defaultBaselineRows([
@@ -560,6 +946,17 @@ test('multiple ACTIVE versions return BASELINE_ACTIVE_AMBIGUOUS', () => {
   const response = api.get(request());
   assert.equal(response.errorCode, 'BASELINE_ACTIVE_AMBIGUOUS');
   assert.deepEqual(Array.from(response.activeVersions), ['BL005', 'BL006']);
+});
+
+test('an invalid ACTIVE version format fails closed', () => {
+  const rows = defaultBaselineRows([
+    baselineTask({ version: 'BASELINE-5' })
+  ], {
+    version: 'BASELINE-5',
+    taskCount: 1
+  });
+  const { api } = createHarness({ baselineRows: rows });
+  assert.equal(api.get(request()).errorCode, 'BASELINE_VERSION_INVALID');
 });
 
 test('metadata B2 and I2 mismatches are rejected', () => {

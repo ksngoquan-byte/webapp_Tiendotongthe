@@ -5,6 +5,8 @@ const QLTD_GANTT_BASELINE_PROJECTS_SHEET = 'Projects';
 const QLTD_GANTT_BASELINE_HEADER_ROW = 4;
 const QLTD_GANTT_BASELINE_DATA_ROW = 5;
 const QLTD_GANTT_BASELINE_COLUMN_COUNT = 14;
+const QLTD_GANTT_BASELINE_HISTORY_ACTIVE_STATUS = 'Đang áp dụng';
+const QLTD_GANTT_BASELINE_HISTORY_REPLACED_STATUS = 'Đã thay thế';
 const QLTD_GANTT_BASELINE_HEADERS = [
   'Ref gốc',
   'Công việc / Phạm vi',
@@ -39,6 +41,8 @@ const QLTD_GANTT_BASELINE_HISTORY_HEADERS = [
 function qltdGanttBaselineGet_(params) {
   const input = params && typeof params === 'object' ? params : {};
   const projectCode = qltdGanttBaselineNormalizeCode_(input.projectCode);
+  const hasRequestedVersion = Object.prototype.hasOwnProperty.call(input, 'version');
+  const requestedVersion = qltdGanttBaselineNormalizeVersion_(input.version);
 
   if (!projectCode) {
     return qltdGanttBaselineError_(
@@ -49,36 +53,50 @@ function qltdGanttBaselineGet_(params) {
     );
   }
 
-  const resolution = resolveCurrentUser_(input);
-  if (!resolution || resolution.success !== true) {
-    return qltdGanttBaselineAuthError_(resolution, projectCode);
-  }
-
-  const projectResult = qltdGanttBaselineResolveProjectReadonly_(projectCode, resolution.user);
-  if (projectResult.error) {
+  if (hasRequestedVersion && !qltdGanttBaselineIsValidVersion_(requestedVersion)) {
     return qltdGanttBaselineError_(
-      projectResult.error.code,
-      projectResult.error.message,
+      'BASELINE_VERSION_INVALID',
+      'Baseline version must use the BL followed by digits format.',
       projectCode,
-      projectResult.warnings || [],
-      projectResult.error.details || {}
+      [],
+      { requestedVersion: requestedVersion }
     );
   }
 
-  let masterSpreadsheet;
-  try {
-    masterSpreadsheet = SpreadsheetApp.openById(projectResult.project.masterSpreadsheetId);
-  } catch (error) {
-    return qltdGanttBaselineError_(
-      'MASTER_SPREADSHEET_OPEN_FAILED',
-      error && error.message || String(error),
-      projectCode,
-      []
-    );
-  }
+  const openResult = qltdGanttBaselineOpenMasterReadonly_(input, projectCode);
+  if (openResult.errorResponse) return openResult.errorResponse;
 
   try {
-    return qltdGanttBaselineReadActive_(masterSpreadsheet, projectCode);
+    if (!hasRequestedVersion) {
+      return qltdGanttBaselineReadActive_(openResult.spreadsheet, projectCode);
+    }
+
+    const historyRead = qltdGanttBaselineReadHistoryReadonly_(openResult.spreadsheet);
+    const activeResponse = qltdGanttBaselineReadActive_(
+      openResult.spreadsheet,
+      projectCode,
+      historyRead
+    );
+    if (activeResponse.success !== true) return activeResponse;
+    if (!activeResponse.available || !activeResponse.baseline) {
+      return qltdGanttBaselineError_(
+        'BASELINE_ACTIVE_NOT_FOUND',
+        'No ACTIVE baseline is available.',
+        projectCode,
+        [],
+        { requestedVersion: requestedVersion }
+      );
+    }
+    if (activeResponse.baseline.version === requestedVersion) {
+      return activeResponse;
+    }
+
+    return qltdGanttBaselineReadRequestedHistorical_(
+      openResult.spreadsheet,
+      projectCode,
+      requestedVersion,
+      historyRead
+    );
   } catch (error) {
     return qltdGanttBaselineError_(
       error && error.code || 'BASELINE_READ_FAILED',
@@ -88,6 +106,151 @@ function qltdGanttBaselineGet_(params) {
       error && error.details || {}
     );
   }
+}
+
+function qltdGanttBaselineVersionsGet_(params) {
+  const input = params && typeof params === 'object' ? params : {};
+  const projectCode = qltdGanttBaselineNormalizeCode_(input.projectCode);
+
+  if (!projectCode) {
+    return qltdGanttBaselineError_(
+      'MISSING_PROJECT_CODE',
+      'Missing projectCode',
+      '',
+      []
+    );
+  }
+
+  const openResult = qltdGanttBaselineOpenMasterReadonly_(input, projectCode);
+  if (openResult.errorResponse) return openResult.errorResponse;
+
+  try {
+    const historyRead = qltdGanttBaselineReadHistoryReadonly_(openResult.spreadsheet);
+    const activeResponse = qltdGanttBaselineReadActive_(
+      openResult.spreadsheet,
+      projectCode,
+      historyRead
+    );
+    if (activeResponse.success !== true) return activeResponse;
+    if (!activeResponse.available || !activeResponse.baseline) {
+      return qltdGanttBaselineError_(
+        'BASELINE_ACTIVE_NOT_FOUND',
+        'No ACTIVE baseline is available.',
+        projectCode,
+        []
+      );
+    }
+
+    const activeVersion = activeResponse.baseline.version;
+    const versions = [{
+      version: activeVersion,
+      type: activeResponse.baseline.type,
+      status: 'ACTIVE',
+      createdAt: activeResponse.baseline.createdAt,
+      taskCount: activeResponse.baseline.taskCount,
+      available: true,
+      sourceSheet: QLTD_GANTT_BASELINE_SHEET
+    }];
+    const historyEntries = qltdGanttBaselineHistoryEntriesNewestFirst_(
+      historyRead,
+      activeVersion
+    );
+
+    historyEntries.forEach(function(entryGroup) {
+      if (entryGroup.entries.length !== 1) {
+        versions.push(qltdGanttBaselineUnavailableVersionEntry_(
+          entryGroup.entries[0],
+          entryGroup.version
+        ));
+        return;
+      }
+
+      const inspection = qltdGanttBaselineInspectHistorical_(
+        openResult.spreadsheet,
+        projectCode,
+        entryGroup.entries[0]
+      );
+      if (!inspection.available) {
+        versions.push(qltdGanttBaselineUnavailableVersionEntry_(
+          entryGroup.entries[0],
+          entryGroup.version
+        ));
+        return;
+      }
+
+      versions.push({
+        version: inspection.response.baseline.version,
+        type: inspection.response.baseline.type,
+        status: inspection.response.baseline.status,
+        createdAt: inspection.response.baseline.createdAt,
+        taskCount: inspection.response.baseline.taskCount,
+        available: true,
+        sourceSheet: inspection.response.sourceSheet
+      });
+    });
+
+    return {
+      success: true,
+      projectCode: projectCode,
+      activeVersion: activeVersion,
+      versions: versions,
+      warnings: activeResponse.warnings || [],
+      apiStatus: 'CONNECTED',
+      source: QLTD_GANTT_BASELINE_SOURCE
+    };
+  } catch (error) {
+    return qltdGanttBaselineError_(
+      error && error.code || 'BASELINE_VERSIONS_READ_FAILED',
+      error && error.message || String(error),
+      projectCode,
+      [],
+      error && error.details || {}
+    );
+  }
+}
+
+function qltdGanttBaselineOpenMasterReadonly_(input, projectCode) {
+  const resolution = resolveCurrentUser_(input);
+  if (!resolution || resolution.success !== true) {
+    return {
+      spreadsheet: null,
+      errorResponse: qltdGanttBaselineAuthError_(resolution, projectCode)
+    };
+  }
+
+  const projectResult = qltdGanttBaselineResolveProjectReadonly_(projectCode, resolution.user);
+  if (projectResult.error) {
+    return {
+      spreadsheet: null,
+      errorResponse: qltdGanttBaselineError_(
+        projectResult.error.code,
+        projectResult.error.message,
+        projectCode,
+        projectResult.warnings || [],
+        projectResult.error.details || {}
+      )
+    };
+  }
+
+  let masterSpreadsheet;
+  try {
+    masterSpreadsheet = SpreadsheetApp.openById(projectResult.project.masterSpreadsheetId);
+  } catch (error) {
+    return {
+      spreadsheet: null,
+      errorResponse: qltdGanttBaselineError_(
+        'MASTER_SPREADSHEET_OPEN_FAILED',
+        error && error.message || String(error),
+        projectCode,
+        []
+      )
+    };
+  }
+
+  return {
+    spreadsheet: masterSpreadsheet,
+    errorResponse: null
+  };
 }
 
 function qltdGanttBaselineResolveProjectReadonly_(projectCode, user) {
@@ -262,7 +425,7 @@ function qltdGanttBaselineListProjectsForUserReadonly_(user, projects) {
   });
 }
 
-function qltdGanttBaselineReadActive_(spreadsheet, projectCode) {
+function qltdGanttBaselineReadActive_(spreadsheet, projectCode, historyRead) {
   const sheet = spreadsheet.getSheetByName(QLTD_GANTT_BASELINE_SHEET);
   if (!sheet || sheet.getLastRow() < QLTD_GANTT_BASELINE_DATA_ROW) {
     return qltdGanttBaselineUnavailable_(projectCode);
@@ -348,6 +511,15 @@ function qltdGanttBaselineReadActive_(spreadsheet, projectCode) {
   }
 
   const version = versionState.values[0];
+  if (!qltdGanttBaselineIsValidVersion_(version)) {
+    return qltdGanttBaselineError_(
+      'BASELINE_VERSION_INVALID',
+      'ACTIVE baseline version format is invalid.',
+      projectCode,
+      [],
+      { activeVersion: version }
+    );
+  }
   const metadataVersion = String(metadataRow[1] || '').trim();
   const metadataStatus = String(metadataRow[8] || '').trim().toUpperCase();
   if (metadataVersion !== version || metadataStatus !== 'ACTIVE') {
@@ -364,7 +536,11 @@ function qltdGanttBaselineReadActive_(spreadsheet, projectCode) {
     );
   }
 
-  const historyResult = qltdGanttBaselineValidateHistory_(spreadsheet, version);
+  const historyResult = qltdGanttBaselineValidateHistory_(
+    spreadsheet,
+    version,
+    historyRead
+  );
   if (historyResult.error) {
     return qltdGanttBaselineError_(
       historyResult.error.code,
@@ -435,13 +611,22 @@ function qltdGanttBaselineReadActive_(spreadsheet, projectCode) {
   };
 }
 
-function qltdGanttBaselineValidateHistory_(spreadsheet, activeVersion) {
+function qltdGanttBaselineReadHistoryReadonly_(spreadsheet) {
   const sheet = spreadsheet.getSheetByName(QLTD_GANTT_BASELINE_HISTORY_SHEET);
-  if (!sheet) return { warnings: [], error: null };
+  if (!sheet) {
+    return {
+      exists: false,
+      entries: [],
+      warnings: [],
+      error: null
+    };
+  }
 
   const values = sheet.getDataRange().getValues();
   if (!values || !values.length) {
     return {
+      exists: true,
+      entries: [],
       warnings: [],
       error: {
         code: 'BASELINE_METADATA_MISMATCH',
@@ -457,6 +642,8 @@ function qltdGanttBaselineValidateHistory_(spreadsheet, activeVersion) {
   );
   if (headerResult.error) {
     return {
+      exists: true,
+      entries: [],
       warnings: [],
       error: {
         code: 'BASELINE_METADATA_MISMATCH',
@@ -466,22 +653,69 @@ function qltdGanttBaselineValidateHistory_(spreadsheet, activeVersion) {
     };
   }
 
-  const activeRows = values.slice(1).filter(function(row) {
-    return qltdGanttBaselineRowHasValue_(row) &&
-      String(qltdGanttBaselineCell_(row, headerResult.headerMap, 'Trạng thái') || '').trim() === 'Đang áp dụng';
+  const entries = [];
+  values.slice(1).forEach(function(row, index) {
+    if (!qltdGanttBaselineRowHasValue_(row)) return;
+    const declaredTaskCountValue = qltdGanttBaselineCell_(
+      row,
+      headerResult.headerMap,
+      'Số dòng công việc'
+    );
+    const declaredTaskCount = Number(declaredTaskCountValue);
+    entries.push({
+      rowNumber: index + 2,
+      version: qltdGanttBaselineNormalizeVersion_(
+        qltdGanttBaselineCell_(row, headerResult.headerMap, 'Mã baseline')
+      ),
+      sourceSheet: String(
+        qltdGanttBaselineCell_(row, headerResult.headerMap, 'Tên sheet lưu trữ') || ''
+      ).trim(),
+      historyStatus: String(
+        qltdGanttBaselineCell_(row, headerResult.headerMap, 'Trạng thái') || ''
+      ).trim(),
+      createdAt: qltdGanttBaselineTimestamp_(
+        qltdGanttBaselineCell_(row, headerResult.headerMap, 'Ngày lưu')
+      ),
+      declaredTaskCount: (
+        String(
+          declaredTaskCountValue === null || declaredTaskCountValue === undefined
+            ? ''
+            : declaredTaskCountValue
+        ).trim() !== '' &&
+        Number.isInteger(declaredTaskCount) &&
+        declaredTaskCount >= 0
+      ) ? declaredTaskCount : null
+    });
   });
 
-  if (activeRows.length > 1) {
+  return {
+    exists: true,
+    entries: entries,
+    warnings: [],
+    error: null
+  };
+}
+
+function qltdGanttBaselineValidateHistory_(spreadsheet, activeVersion, historyRead) {
+  const readResult = historyRead || qltdGanttBaselineReadHistoryReadonly_(spreadsheet);
+  if (readResult.error) return readResult;
+  if (!readResult.exists) return { warnings: [], error: null };
+
+  const activeEntries = (readResult.entries || []).filter(function(entry) {
+    return entry.historyStatus === QLTD_GANTT_BASELINE_HISTORY_ACTIVE_STATUS;
+  });
+
+  if (activeEntries.length > 1) {
     return {
       warnings: [],
       error: {
         code: 'BASELINE_ACTIVE_AMBIGUOUS',
         message: 'Baseline history contains more than one active record.',
-        details: { activeHistoryCount: activeRows.length }
+        details: { activeHistoryCount: activeEntries.length }
       }
     };
   }
-  if (!activeRows.length) {
+  if (!activeEntries.length) {
     return {
       warnings: [],
       error: {
@@ -491,9 +725,7 @@ function qltdGanttBaselineValidateHistory_(spreadsheet, activeVersion) {
     };
   }
 
-  const historyVersion = String(
-    qltdGanttBaselineCell_(activeRows[0], headerResult.headerMap, 'Mã baseline') || ''
-  ).trim();
+  const historyVersion = activeEntries[0].version;
   if (historyVersion !== activeVersion) {
     return {
       warnings: [],
@@ -509,6 +741,255 @@ function qltdGanttBaselineValidateHistory_(spreadsheet, activeVersion) {
   }
 
   return { warnings: [], error: null };
+}
+
+function qltdGanttBaselineReadRequestedHistorical_(
+  spreadsheet,
+  projectCode,
+  requestedVersion,
+  historyRead
+) {
+  if (historyRead.error) {
+    return qltdGanttBaselineError_(
+      historyRead.error.code,
+      historyRead.error.message,
+      projectCode,
+      historyRead.warnings || [],
+      historyRead.error.details || {}
+    );
+  }
+
+  const matches = (historyRead.entries || []).filter(function(entry) {
+    return entry.version === requestedVersion;
+  });
+  if (!matches.length) {
+    return qltdGanttBaselineError_(
+      'BASELINE_VERSION_NOT_FOUND',
+      'The requested baseline version does not exist.',
+      projectCode,
+      [],
+      { requestedVersion: requestedVersion }
+    );
+  }
+  if (matches.length !== 1) {
+    return qltdGanttBaselineError_(
+      'BASELINE_VERSION_NOT_AVAILABLE',
+      'The requested baseline version has ambiguous history metadata.',
+      projectCode,
+      [],
+      {
+        requestedVersion: requestedVersion,
+        reasonCode: 'BASELINE_HISTORY_AMBIGUOUS',
+        historyMatchCount: matches.length
+      }
+    );
+  }
+
+  const inspection = qltdGanttBaselineInspectHistorical_(
+    spreadsheet,
+    projectCode,
+    matches[0]
+  );
+  if (inspection.available) return inspection.response;
+
+  return qltdGanttBaselineError_(
+    'BASELINE_VERSION_NOT_AVAILABLE',
+    'The requested baseline version is not available.',
+    projectCode,
+    [],
+    {
+      requestedVersion: requestedVersion,
+      reasonCode: inspection.reasonCode,
+      sourceSheet: matches[0].sourceSheet
+    }
+  );
+}
+
+function qltdGanttBaselineInspectHistorical_(spreadsheet, projectCode, historyEntry) {
+  const unavailable = function(reasonCode) {
+    return {
+      available: false,
+      reasonCode: reasonCode,
+      response: null
+    };
+  };
+  const version = historyEntry && historyEntry.version || '';
+  const sourceSheet = historyEntry && historyEntry.sourceSheet || '';
+
+  if (
+    !qltdGanttBaselineIsValidVersion_(version) ||
+    !sourceSheet ||
+    sourceSheet === QLTD_GANTT_BASELINE_SHEET ||
+    historyEntry.historyStatus !== QLTD_GANTT_BASELINE_HISTORY_REPLACED_STATUS
+  ) {
+    return unavailable('BASELINE_HISTORY_METADATA_INVALID');
+  }
+
+  const sheet = spreadsheet.getSheetByName(sourceSheet);
+  if (!sheet || sheet.getLastRow() < QLTD_GANTT_BASELINE_DATA_ROW) {
+    return unavailable('BASELINE_SNAPSHOT_MISSING');
+  }
+
+  const lastRow = sheet.getLastRow();
+  const values = sheet.getRange(
+    2,
+    1,
+    lastRow - 1,
+    QLTD_GANTT_BASELINE_COLUMN_COUNT
+  ).getValues();
+  const metadataRow = values[0] || [];
+  const headerRow = values[QLTD_GANTT_BASELINE_HEADER_ROW - 2] || [];
+  const rows = values
+    .slice(QLTD_GANTT_BASELINE_DATA_ROW - 2)
+    .filter(qltdGanttBaselineRowHasValue_);
+  if (!rows.length) return unavailable('BASELINE_SNAPSHOT_DATA_INVALID');
+
+  const headerResult = qltdGanttBaselineBuildHeaderMap_(
+    headerRow,
+    QLTD_GANTT_BASELINE_HEADERS,
+    true
+  );
+  if (headerResult.error) return unavailable('BASELINE_SNAPSHOT_SCHEMA_INVALID');
+
+  const versionState = qltdGanttBaselineUniqueValues_(
+    rows,
+    headerResult.headerMap,
+    'Baseline version',
+    true
+  );
+  const typeState = qltdGanttBaselineUniqueValues_(
+    rows,
+    headerResult.headerMap,
+    'Baseline type',
+    true
+  );
+  const statusState = qltdGanttBaselineUniqueValues_(
+    rows,
+    headerResult.headerMap,
+    'Baseline status',
+    true
+  );
+  const metadataVersion = qltdGanttBaselineNormalizeVersion_(metadataRow[1]);
+  const metadataType = String(metadataRow[5] || '').trim().toUpperCase();
+  const metadataStatus = String(metadataRow[8] || '').trim().toUpperCase();
+  const type = typeState.values[0] || '';
+
+  if (
+    metadataVersion !== version ||
+    versionState.blankCount > 0 ||
+    versionState.values.length !== 1 ||
+    versionState.values[0] !== version ||
+    typeState.blankCount > 0 ||
+    typeState.values.length !== 1 ||
+    (type !== 'LAN_DAU' && type !== 'DIEU_CHINH') ||
+    metadataType !== type ||
+    statusState.blankCount > 0 ||
+    statusState.values.length !== 1 ||
+    statusState.values[0] !== 'ACTIVE' ||
+    metadataStatus !== 'ACTIVE'
+  ) {
+    return unavailable('BASELINE_SNAPSHOT_METADATA_MISMATCH');
+  }
+
+  const warnings = [];
+  const data = qltdGanttBaselineBuildRecords_(
+    rows,
+    headerResult.headerMap,
+    version,
+    warnings
+  );
+  if (data.length !== rows.length || warnings.length) {
+    return unavailable('BASELINE_SNAPSHOT_DATA_INVALID');
+  }
+
+  const metadataTaskCount = Number(metadataRow[7]);
+  if (
+    !Number.isInteger(metadataTaskCount) ||
+    metadataTaskCount < 0 ||
+    metadataTaskCount !== data.length ||
+    historyEntry.declaredTaskCount === null ||
+    historyEntry.declaredTaskCount !== data.length
+  ) {
+    return unavailable('BASELINE_SNAPSHOT_TASK_COUNT_MISMATCH');
+  }
+
+  const rowCreatedAtState = qltdGanttBaselineUniqueTimestamps_(
+    rows,
+    headerResult.headerMap,
+    'Created at'
+  );
+  const metadataCreatedAt = qltdGanttBaselineTimestamp_(metadataRow[3]);
+  if (
+    rowCreatedAtState.blankCount > 0 ||
+    rowCreatedAtState.values.length !== 1 ||
+    !metadataCreatedAt ||
+    !historyEntry.createdAt ||
+    rowCreatedAtState.values[0] !== metadataCreatedAt ||
+    metadataCreatedAt !== historyEntry.createdAt
+  ) {
+    return unavailable('BASELINE_SNAPSHOT_CREATED_AT_MISMATCH');
+  }
+
+  const diagnostics = {
+    duplicateTaskCodes: qltdGanttBaselineFindDuplicates_(data, 'taskCode', true),
+    duplicateRefs: qltdGanttBaselineFindDuplicates_(data, 'refId', false)
+  };
+
+  return {
+    available: true,
+    reasonCode: '',
+    response: {
+      success: true,
+      available: true,
+      projectCode: projectCode,
+      sourceSheet: sourceSheet,
+      baseline: {
+        version: version,
+        type: type,
+        status: type === 'LAN_DAU' ? 'REPLACED_INITIAL' : 'REPLACED',
+        createdAt: metadataCreatedAt,
+        taskCount: data.length
+      },
+      data: data,
+      diagnostics: diagnostics,
+      warnings: [],
+      apiStatus: 'CONNECTED',
+      source: QLTD_GANTT_BASELINE_SOURCE
+    }
+  };
+}
+
+function qltdGanttBaselineHistoryEntriesNewestFirst_(historyRead, activeVersion) {
+  if (!historyRead || historyRead.error || !historyRead.exists) return [];
+  const groups = [];
+  const groupByVersion = {};
+  (historyRead.entries || []).slice().reverse().forEach(function(entry) {
+    if (!entry.version || entry.version === activeVersion) return;
+    if (!groupByVersion[entry.version]) {
+      const group = {
+        version: entry.version,
+        entries: []
+      };
+      groupByVersion[entry.version] = group;
+      groups.push(group);
+    }
+    groupByVersion[entry.version].entries.push(entry);
+  });
+  return groups;
+}
+
+function qltdGanttBaselineUnavailableVersionEntry_(historyEntry, version) {
+  return {
+    version: version || historyEntry && historyEntry.version || '',
+    type: '',
+    status: 'UNAVAILABLE',
+    createdAt: historyEntry && historyEntry.createdAt || '',
+    taskCount: (
+      historyEntry && historyEntry.declaredTaskCount !== null
+    ) ? historyEntry.declaredTaskCount : null,
+    available: false,
+    sourceSheet: historyEntry && historyEntry.sourceSheet || ''
+  };
 }
 
 function qltdGanttBaselineBuildRecords_(rows, headerMap, version, warnings) {
@@ -674,6 +1155,22 @@ function qltdGanttBaselineUniqueValues_(rows, headerMap, header, normalizeUpperc
   return { values: values, blankCount: blankCount };
 }
 
+function qltdGanttBaselineUniqueTimestamps_(rows, headerMap, header) {
+  const values = [];
+  let blankCount = 0;
+  (rows || []).forEach(function(row) {
+    const value = qltdGanttBaselineTimestamp_(
+      qltdGanttBaselineCell_(row, headerMap, header)
+    );
+    if (!value) {
+      blankCount += 1;
+      return;
+    }
+    if (values.indexOf(value) === -1) values.push(value);
+  });
+  return { values: values, blankCount: blankCount };
+}
+
 function qltdGanttBaselineFindDuplicates_(records, field, normalizeUppercase) {
   const counts = {};
   (records || []).forEach(function(record) {
@@ -738,6 +1235,14 @@ function qltdGanttBaselineTimestamp_(value) {
 
 function qltdGanttBaselineNormalizeCode_(value) {
   return String(value || '').trim().toUpperCase();
+}
+
+function qltdGanttBaselineNormalizeVersion_(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function qltdGanttBaselineIsValidVersion_(value) {
+  return /^BL\d+$/.test(String(value || ''));
 }
 
 function qltdGanttBaselineNormalizeRef_(value) {
