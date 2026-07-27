@@ -181,6 +181,10 @@ function qltdDevApiHandleGet(e) {
     return qltdDevApiGanttData_(params);
   }
 
+  if (action === 'ganttbaseline') {
+    return qltdDevApiJson_(qltdGanttBaselineGet_(params));
+  }
+
   if (action === 'dashboardsummary') {
     return qltdDevApiDashboardSummary_(params);
   }
