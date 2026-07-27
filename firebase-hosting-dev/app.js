@@ -7969,7 +7969,7 @@ function qltdGanttBaselineGetModel_(projectCode, currentTasks) {
       state.payload.data,
       {
         ...state.payload.baseline,
-        projectCode: code
+        projectCode
       }
     );
     state.modelCurrentTasks = currentTasks;

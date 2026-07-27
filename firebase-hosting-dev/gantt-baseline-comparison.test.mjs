@@ -435,6 +435,54 @@ test('task comparison leaves link arrays and source tasks unchanged', () => {
   assert.deepEqual(links, linksBefore);
 });
 
+test('qltdGanttBaselineGetModel_ uses its projectCode parameter without a free code variable', () => {
+  const modelContext = {
+    Array,
+    Object,
+    String
+  };
+  vm.createContext(modelContext);
+  vm.runInContext(
+    `
+const state = {
+  selectedVersion: 'BL005',
+  payload: {
+    baseline: { version: 'BL005', status: 'ACTIVE' },
+    data: [{ taskCode: 'CV-001' }]
+  },
+  model: null,
+  modelCurrentTasks: null
+};
+let buildCalls = 0;
+function qltdGanttBaselineGetProjectState_(projectCode) {
+  if (projectCode !== '24-1.ĐB') throw new Error('wrong projectCode');
+  return state;
+}
+function qltdGanttBaselineBuildComparisonModel_(currentTasks, baselineData, baselineMeta) {
+  buildCalls += 1;
+  return {
+    version: baselineMeta.version,
+    currentTasks,
+    baselineData,
+    baselineMeta
+  };
+}
+${extractFunction(appSource, 'qltdGanttBaselineGetModel_')}
+this.result = qltdGanttBaselineGetModel_('24-1.ĐB', [{ id: 'R1' }]);
+this.state = state;
+this.buildCalls = buildCalls;`,
+    modelContext
+  );
+  assert.equal(Object.hasOwn(modelContext, 'code'), false);
+  assert.equal(modelContext.buildCalls, 1);
+  assert.equal(modelContext.result.baselineMeta.projectCode, '24-1.ĐB');
+  assert.equal(modelContext.state.modelCurrentTasks[0].id, 'R1');
+  assert.doesNotMatch(
+    extractFunction(appSource, 'qltdGanttBaselineGetModel_'),
+    /projectCode\s*:\s*code\b/
+  );
+});
+
 function createControllerHarness() {
   let selectedProject = 'P1';
   const renderEvents = [];
