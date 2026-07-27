@@ -872,6 +872,21 @@ test('timeline template preserves prior output, returns it unchanged when OFF an
   );
 });
 
+test('baseline task segment and milestone use black styling', () => {
+  const styles = extractFunction(appSource, 'qltdWeb07EnsureGanttPolishStyles');
+  const start = styles.indexOf('#web07GanttContainer .qltd-baseline-cell-segment');
+  const end = styles.indexOf('.qltd-baseline-result', start);
+  assert.ok(start >= 0 && end > start);
+  const baselineStyles = styles.slice(start, end);
+  assert.match(baselineStyles, /border-top:\s*1px dashed #000000/);
+  assert.match(baselineStyles, /border-bottom:\s*1px dashed #000000/);
+  assert.match(baselineStyles, /border-left:\s*1px dashed #000000/);
+  assert.match(baselineStyles, /border-right:\s*1px dashed #000000/);
+  assert.match(baselineStyles, /border:\s*1px solid #000000/);
+  assert.equal((baselineStyles.match(/background:\s*#000000/g) || []).length, 2);
+  assert.doesNotMatch(baselineStyles, /#475569|#94a3b8|rgba\(148,\s*163,\s*184/);
+});
+
 test('day cells render inclusive baseline once per covered day without a boundary gap', () => {
   const { api, gantt } = createTimelineHarness({ unit: 'day' });
   api.ensure(gantt);

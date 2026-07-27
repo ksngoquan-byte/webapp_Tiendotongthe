@@ -8877,21 +8877,21 @@ function qltdWeb07EnsureGanttPolishStyles() {
       left: var(--qltd-baseline-left, 0%);
       width: var(--qltd-baseline-width, 100%);
       height: 5px;
-      border-top: 1px dashed #475569;
-      border-bottom: 1px dashed #475569;
-      background: rgba(148, 163, 184, .78);
+      border-top: 1px dashed #000000;
+      border-bottom: 1px dashed #000000;
+      background: #000000;
       box-sizing: border-box;
       pointer-events: none;
       z-index: 1;
     }
 
     #web07GanttContainer .qltd-baseline-cell-segment.is-start {
-      border-left: 1px dashed #475569;
+      border-left: 1px dashed #000000;
       border-radius: 3px 0 0 3px;
     }
 
     #web07GanttContainer .qltd-baseline-cell-segment.is-end {
-      border-right: 1px dashed #475569;
+      border-right: 1px dashed #000000;
       border-radius: 0 3px 3px 0;
     }
 
@@ -8905,8 +8905,8 @@ function qltdWeb07EnsureGanttPolishStyles() {
       left: var(--qltd-baseline-left, 0%);
       width: 8px;
       height: 8px;
-      border: 1px solid #475569;
-      background: #94a3b8;
+      border: 1px solid #000000;
+      background: #000000;
       transform: translateX(-50%) rotate(45deg);
       box-sizing: border-box;
       pointer-events: none;
