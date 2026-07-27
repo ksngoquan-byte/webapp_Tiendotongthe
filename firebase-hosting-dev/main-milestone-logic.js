@@ -2,10 +2,35 @@ function clean(value) {
   return String(value || '').trim();
 }
 
+function isGeneratedRowId(value) {
+  return /^ROW-\d+$/i.test(clean(value));
+}
+
+function normalizeUid(value) {
+  const raw = clean(value);
+  const uid = raw.replace(/^UID:/i, '');
+  return uid && !isGeneratedRowId(uid) ? uid : '';
+}
+
+function getTaskUid(task) {
+  const candidates = [
+    task && task.id,
+    task && task.uid,
+    task && task.taskId,
+    task && task.itemId,
+    task && task.refId
+  ];
+  for (const candidate of candidates) {
+    const uid = normalizeUid(candidate);
+    if (uid) return uid;
+  }
+  return '';
+}
+
 export function getMainMilestoneStableKey(task, projectCode) {
   const project = clean(projectCode);
-  const code = clean(task && (task.masterTaskCode || task.code));
-  return project && code ? `${project}|${code}` : '';
+  const uid = getTaskUid(task);
+  return project && uid ? `${project}|UID:${uid}` : '';
 }
 
 function addToIndex(map, rawValue, task) {
@@ -25,7 +50,11 @@ export function buildMainMilestoneTaskIndex(tasks = [], projectCode = '') {
   (tasks || []).forEach((task) => {
     const stableKey = getMainMilestoneStableKey(task, projectCode);
     addToIndex(byStableKey, stableKey, task);
-    addToIndex(byId, task && task.id, task);
+    if (!isGeneratedRowId(task && task.id)) addToIndex(byId, normalizeUid(task && task.id), task);
+    if (!isGeneratedRowId(task && task.uid)) addToIndex(byId, normalizeUid(task && task.uid), task);
+    if (!isGeneratedRowId(task && task.taskId)) addToIndex(byId, normalizeUid(task && task.taskId), task);
+    if (!isGeneratedRowId(task && task.itemId)) addToIndex(byId, normalizeUid(task && task.itemId), task);
+    if (!isGeneratedRowId(task && task.refId)) addToIndex(byId, normalizeUid(task && task.refId), task);
     addToIndex(byMasterTaskCode, task && task.masterTaskCode, task);
     addToIndex(byCode, task && task.code, task);
   });
@@ -33,45 +62,86 @@ export function buildMainMilestoneTaskIndex(tasks = [], projectCode = '') {
   return { byStableKey, byId, byMasterTaskCode, byCode };
 }
 
-function uniqueMatches(rawKey, index) {
+function uniqueMatches(lookupKey, maps) {
   const matches = [];
-  [
-    index.byStableKey,
-    index.byId,
-    index.byMasterTaskCode,
-    index.byCode
-  ].forEach((map) => {
-    (map.get(rawKey) || []).forEach((task) => {
+  maps.forEach((map) => {
+    (map.get(lookupKey) || []).forEach((task) => {
       if (!matches.includes(task)) matches.push(task);
     });
   });
   return matches;
 }
 
+function unresolvedKey(rawKey, status, warning) {
+  return { rawKey, status, key: '', warning };
+}
+
 export function resolveLegacyMainMilestoneKey(rawValue, taskIndex, projectCode) {
   const rawKey = clean(rawValue);
   if (!rawKey) return { rawKey, status: 'EMPTY', key: '' };
 
-  const matches = uniqueMatches(rawKey, taskIndex);
-  if (matches.length > 1) {
-    return {
+  const project = clean(projectCode);
+  const compositeIndex = rawKey.indexOf('|');
+  let lookupKey = rawKey;
+  let lookupMaps = [
+    taskIndex.byId,
+    taskIndex.byMasterTaskCode,
+    taskIndex.byCode
+  ];
+
+  if (compositeIndex >= 0) {
+    const keyProject = clean(rawKey.slice(0, compositeIndex));
+    const keyTail = clean(rawKey.slice(compositeIndex + 1));
+    if (!keyProject || keyProject !== project) {
+      return unresolvedKey(
+        rawKey,
+        'PROJECT_MISMATCH',
+        'MAIN_MILESTONE_PROJECT_KEY_MISMATCH'
+      );
+    }
+    if (/^UID:/i.test(keyTail)) {
+      lookupKey = normalizeUid(keyTail);
+      lookupMaps = [taskIndex.byId];
+    } else {
+      lookupKey = keyTail;
+      lookupMaps = [taskIndex.byMasterTaskCode, taskIndex.byCode];
+    }
+  } else if (/^UID:/i.test(rawKey)) {
+    lookupKey = normalizeUid(rawKey);
+    lookupMaps = [taskIndex.byId];
+  }
+
+  if (!lookupKey || isGeneratedRowId(lookupKey)) {
+    return unresolvedKey(
       rawKey,
-      status: 'AMBIGUOUS',
-      key: '',
-      warning: 'MAIN_MILESTONE_AMBIGUOUS_KEY'
-    };
+      'UNSTABLE_ROW_KEY',
+      'MAIN_MILESTONE_UNSTABLE_ROW_KEY'
+    );
+  }
+
+  const matches = uniqueMatches(lookupKey, lookupMaps);
+  if (matches.length > 1) {
+    return unresolvedKey(
+      rawKey,
+      'AMBIGUOUS',
+      'MAIN_MILESTONE_AMBIGUOUS_KEY'
+    );
   }
   if (matches.length === 1) {
     const key = getMainMilestoneStableKey(matches[0], projectCode);
     if (key) return { rawKey, status: key === rawKey ? 'STABLE' : 'MIGRATED', key };
+    return unresolvedKey(
+      rawKey,
+      'UID_REQUIRED',
+      'MAIN_MILESTONE_UID_REQUIRED'
+    );
   }
 
-  return {
+  return unresolvedKey(
     rawKey,
-    status: 'ORPHAN',
-    key: '',
-    warning: 'MAIN_MILESTONE_ORPHAN_KEY'
-  };
+    'ORPHAN',
+    'MAIN_MILESTONE_ORPHAN_KEY'
+  );
 }
 
 export function migrateMainMilestoneKeys(values, tasks = [], projectCode = '') {

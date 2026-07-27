@@ -159,6 +159,85 @@ vm.createContext(context);
 assert.doesNotThrow(() => new vm.Script(helpersSource));
 vm.runInContext(`${helpersSource}\nthis.api = { qltdWeb07GetOrCreateGanttRequest, qltdWeb07FetchGanttPayload, qltdWeb07RequestGanttPayload };`, context);
 
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function createMainMilestoneSaveHarness({
+  initialProject = 'P1',
+  initialIds = [],
+  persistSnapshot = async () => ({ success: true })
+} = {}) {
+  const cacheWrites = [];
+  const milestoneSaveContext = {
+    Array,
+    Boolean,
+    Map,
+    Math,
+    Number,
+    Object,
+    Promise,
+    Set,
+    String,
+    initialProject,
+    initialIds,
+    persistSnapshot,
+    currentUserProfile: { email: 'admin@example.com' },
+    getMainMilestoneProjectKey: (projectCode) => String(projectCode || ''),
+    cacheMainMilestonesForProject: (projectKey, _payload, snapshot) => {
+      cacheWrites.push({
+        projectKey,
+        ids: Array.from(snapshot.ids),
+        orphanKeys: Array.from(snapshot.orphanKeys)
+      });
+    }
+  };
+  vm.createContext(milestoneSaveContext);
+  vm.runInContext(
+    [
+      'const qltdGanttPayload = null;',
+      'let qltdCurrentMainMilestoneProjectKey = initialProject;',
+      'let qltdMainMilestoneKeys = new Set(initialIds);',
+      'let qltdMainMilestoneOrphanKeys = new Set();',
+      'let qltdMainMilestoneMigration = { validCount: qltdMainMilestoneKeys.size };',
+      'const qltdMainMilestoneSaveQueues = new Map();',
+      'async function qltdMainMilestonePersistSaveSnapshot(snapshot) { return persistSnapshot(snapshot); }',
+      extractFunction(appSource, 'qltdMainMilestoneCloneIds'),
+      extractFunction(appSource, 'qltdMainMilestoneGetSaveQueue'),
+      extractFunction(appSource, 'qltdMainMilestoneCreateSaveSnapshot'),
+      extractFunction(appSource, 'qltdMainMilestoneEnqueueSave'),
+      extractFunction(appSource, 'saveMainMilestonesForProject'),
+      extractFunction(appSource, 'qltdMainMilestoneApplySaveResult'),
+      `this.api = {
+        createSnapshot: qltdMainMilestoneCreateSaveSnapshot,
+        enqueue: qltdMainMilestoneEnqueueSave,
+        save: saveMainMilestonesForProject,
+        apply: qltdMainMilestoneApplySaveResult,
+        setCurrentProject(projectKey) {
+          qltdCurrentMainMilestoneProjectKey = projectKey;
+        },
+        setState(ids) {
+          qltdMainMilestoneKeys = new Set(ids);
+          qltdMainMilestoneMigration.validCount = qltdMainMilestoneKeys.size;
+        },
+        getState() {
+          return {
+            projectKey: qltdCurrentMainMilestoneProjectKey,
+            ids: Array.from(qltdMainMilestoneKeys),
+            validCount: qltdMainMilestoneMigration.validCount
+          };
+        }
+      };`
+    ].join('\n'),
+    milestoneSaveContext
+  );
+  return { api: milestoneSaveContext.api, cacheWrites };
+}
+
 test('extractor handles async defaults and ignores comment/string lookalikes', () => {
   const fixture = [
     '// function target(options = {}) { return "comment"; }',
@@ -315,13 +394,256 @@ test('loader protects current project from stale success and stale error renderi
   assert.match(loaderSource, /const requestSeq = \+\+qltdGanttLoadRequestSeq/);
   assert.equal(
     (loaderSource.match(/!qltdWeb07IsCurrentGanttLoad\(projectCode, requestSeq\)/g) || []).length,
-    2,
-    'Both success and error paths must reject stale UI writes.'
+    3,
+    'Success before/after milestone hydration and the error path must reject stale UI writes.'
+  );
+  assert.match(
+    loaderSource,
+    /await loadMainMilestonesForProject\(projectCode, payload\);\s+if \(!qltdWeb07IsCurrentGanttLoad\(projectCode, requestSeq\)\) return payload;/
   );
   assert.match(loaderSource, /return payload/);
   assert.match(loaderSource, /return null/);
   assert.match(loaderSource, /onBusyRetry/);
   assert.match(loaderSource, /renderGanttBusyRetry\(projectCode, retryState\)/);
+});
+
+test('main milestone loader rejects a stale project response before state/cache mutation', async () => {
+  let resolveA;
+  let resolveB;
+  const applied = [];
+  const cached = [];
+  const milestoneContext = {
+    Promise,
+    String,
+    console: { log() {}, warn() {} },
+    qltdGanttPayload: null,
+    currentUserProfile: { email: 'admin@example.com' },
+    db: null,
+    getMainMilestoneProjectKey: (projectCode) => String(projectCode || ''),
+    getMainMilestoneProjectKeyAliases: (projectCode) => [String(projectCode || '')],
+    getMainMilestonesFromApiPayload: (payload) => payload?.mainMilestoneIds || [],
+    readCachedMainMilestones: () => [],
+    applyMainMilestoneMigration: (values, _tasks, projectKey, source) => {
+      applied.push({ projectKey, source, values: [...values] });
+      return { migratedCount: 0 };
+    },
+    fetchBackendJson: (_action, params) => new Promise((resolve) => {
+      if (params.projectCode === 'A') resolveA = resolve;
+      else if (params.projectCode === 'B') resolveB = resolve;
+    }),
+    cacheMainMilestonesForProject: (projectKey) => cached.push(projectKey),
+    hasMainMilestoneApiSource: () => true,
+    getDoc: () => { throw new Error('Firestore must not be reached'); },
+    getMainMilestoneDocRef: () => null
+  };
+  vm.createContext(milestoneContext);
+  vm.runInContext(
+    [
+      "let qltdCurrentMainMilestoneProjectKey = '';",
+      'let qltdMainMilestoneLoadRequestSeq = 0;',
+      extractFunction(appSource, 'isCurrentMainMilestoneLoad'),
+      extractFunction(appSource, 'loadMainMilestonesForProject'),
+      'this.loadMainMilestones = loadMainMilestonesForProject;',
+      'this.getCurrentProject = () => qltdCurrentMainMilestoneProjectKey;'
+    ].join('\n'),
+    milestoneContext
+  );
+
+  const loadA = milestoneContext.loadMainMilestones('A', {
+    projectCode: 'A',
+    data: [{ id: '1' }],
+    mainMilestoneIds: ['A|UID:1']
+  });
+  const loadB = milestoneContext.loadMainMilestones('B', {
+    projectCode: 'B',
+    data: [{ id: '2' }],
+    mainMilestoneIds: ['B|UID:2']
+  });
+
+  assert.equal(typeof resolveA, 'function');
+  assert.equal(typeof resolveB, 'function');
+  resolveB({ success: true, ids: ['B|UID:2'], mainMilestoneIds: ['B|UID:2'] });
+  await loadB;
+  resolveA({ success: true, ids: ['A|UID:1'], mainMilestoneIds: ['A|UID:1'] });
+  await loadA;
+
+  assert.equal(milestoneContext.getCurrentProject(), 'B');
+  assert.deepEqual(
+    applied.map(({ projectKey, source }) => [projectKey, source]),
+    [
+      ['A', 'GANTT_PAYLOAD'],
+      ['B', 'GANTT_PAYLOAD'],
+      ['B', 'APPS_SCRIPT_API']
+    ]
+  );
+  assert.deepEqual(cached, ['B']);
+});
+
+test('main milestone save snapshots are immutable and do not retain a mutable Set reference', () => {
+  const { api } = createMainMilestoneSaveHarness();
+  const ids = new Set(['P1|UID:A']);
+  const previousIds = new Set(['P1|UID:BEFORE']);
+  const snapshot = api.createSnapshot('P1', ids, previousIds, { actorEmail: 'owner@example.com' });
+
+  ids.add('P1|UID:B');
+  previousIds.clear();
+
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(Object.isFrozen(snapshot.ids), true);
+  assert.equal(Object.isFrozen(snapshot.previousIds), true);
+  assert.deepEqual(Array.from(snapshot.ids), ['P1|UID:A']);
+  assert.deepEqual(Array.from(snapshot.previousIds), ['P1|UID:BEFORE']);
+  assert.equal(snapshot.projectKey, 'P1');
+  assert.equal(snapshot.sequence, 1);
+});
+
+test('two rapid milestone toggles cannot persist in reverse response order', async () => {
+  const firstResponse = createDeferred();
+  const secondResponse = createDeferred();
+  const events = [];
+  let backendIds = [];
+  const { api } = createMainMilestoneSaveHarness({
+    persistSnapshot: async (snapshot) => {
+      events.push(`start:${snapshot.sequence}`);
+      const result = await (snapshot.sequence === 1 ? firstResponse.promise : secondResponse.promise);
+      if (result.success) backendIds = Array.from(snapshot.ids);
+      events.push(`end:${snapshot.sequence}`);
+      return result;
+    }
+  });
+  const firstSnapshot = api.createSnapshot('P1', ['P1|UID:A'], []);
+  const secondSnapshot = api.createSnapshot('P1', ['P1|UID:A', 'P1|UID:B'], ['P1|UID:A']);
+  const firstSave = api.enqueue(firstSnapshot);
+  const secondSave = api.enqueue(secondSnapshot);
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(events, ['start:1']);
+
+  secondResponse.resolve({ success: true });
+  await Promise.resolve();
+  assert.deepEqual(events, ['start:1'], 'second write is not dispatched while the first write is pending');
+
+  firstResponse.resolve({ success: true });
+  const [firstResult, secondResult] = await Promise.all([firstSave, secondSave]);
+
+  assert.deepEqual(events, ['start:1', 'end:1', 'start:2', 'end:2']);
+  assert.equal(firstResult.isLatest, false);
+  assert.equal(secondResult.isLatest, true);
+  assert.deepEqual(backendIds, ['P1|UID:A', 'P1|UID:B']);
+  assert.deepEqual(Array.from(secondResult.finalIds), backendIds);
+});
+
+test('two rapid milestone toggles keep the first successful state when the latest save fails', async () => {
+  let backendIds = [];
+  const { api, cacheWrites } = createMainMilestoneSaveHarness({
+    persistSnapshot: async (snapshot) => {
+      if (snapshot.sequence === 2) return { success: false, message: 'SECOND_FAILED' };
+      backendIds = Array.from(snapshot.ids);
+      return { success: true };
+    }
+  });
+
+  const firstSave = api.save('P1', { projectCode: 'P1' }, {
+    ids: ['P1|UID:A'],
+    previousIds: [],
+    orphanCount: 0
+  });
+  const secondSave = api.save('P1', { projectCode: 'P1' }, {
+    ids: ['P1|UID:A', 'P1|UID:B'],
+    previousIds: ['P1|UID:A'],
+    orphanCount: 0
+  });
+  api.setState(['P1|UID:A', 'P1|UID:B']);
+
+  const firstResult = await firstSave;
+  assert.equal(api.apply(firstResult, 'P1'), false, 'an older success cannot replace newer optimistic UI');
+  const secondResult = await secondSave;
+  assert.equal(api.apply(secondResult, 'P1'), true);
+
+  assert.equal(firstResult.success, true);
+  assert.equal(firstResult.isLatest, false);
+  assert.equal(secondResult.success, false);
+  assert.equal(secondResult.isLatest, true);
+  assert.deepEqual(Array.from(secondResult.finalIds), ['P1|UID:A']);
+  assert.deepEqual(backendIds, ['P1|UID:A']);
+  assert.deepEqual(Array.from(api.getState().ids), ['P1|UID:A']);
+  assert.deepEqual(cacheWrites, [{
+    projectKey: 'P1',
+    ids: ['P1|UID:A'],
+    orphanKeys: []
+  }]);
+});
+
+test('two rapid milestone toggles keep the latest successful state after the first save fails', async () => {
+  let backendIds = [];
+  const { api, cacheWrites } = createMainMilestoneSaveHarness({
+    persistSnapshot: async (snapshot) => {
+      if (snapshot.sequence === 1) return { success: false, message: 'FIRST_FAILED' };
+      backendIds = Array.from(snapshot.ids);
+      return { success: true };
+    }
+  });
+
+  const firstSave = api.save('P1', { projectCode: 'P1' }, {
+    ids: ['P1|UID:A'],
+    previousIds: [],
+    orphanCount: 0
+  });
+  const secondSave = api.save('P1', { projectCode: 'P1' }, {
+    ids: ['P1|UID:A', 'P1|UID:B'],
+    previousIds: ['P1|UID:A'],
+    orphanCount: 0
+  });
+  api.setState(['P1|UID:A', 'P1|UID:B']);
+
+  const firstResult = await firstSave;
+  assert.equal(api.apply(firstResult, 'P1'), false, 'an older failure cannot roll back newer optimistic UI');
+  const secondResult = await secondSave;
+  assert.equal(api.apply(secondResult, 'P1'), true);
+
+  assert.equal(firstResult.success, false);
+  assert.equal(firstResult.isLatest, false);
+  assert.equal(secondResult.success, true);
+  assert.equal(secondResult.isLatest, true);
+  assert.deepEqual(Array.from(secondResult.finalIds), ['P1|UID:A', 'P1|UID:B']);
+  assert.deepEqual(backendIds, ['P1|UID:A', 'P1|UID:B']);
+  assert.deepEqual(Array.from(api.getState().ids), backendIds);
+  assert.deepEqual(cacheWrites, [{
+    projectKey: 'P1',
+    ids: ['P1|UID:A', 'P1|UID:B'],
+    orphanKeys: []
+  }]);
+});
+
+test('switching project while an old milestone save is pending cannot mutate the new project', async () => {
+  const oldProjectResponse = createDeferred();
+  const { api, cacheWrites } = createMainMilestoneSaveHarness({
+    persistSnapshot: () => oldProjectResponse.promise
+  });
+
+  const oldProjectSave = api.save('P1', { projectCode: 'P1' }, {
+    ids: ['P1|UID:A'],
+    previousIds: [],
+    orphanCount: 0
+  });
+  api.setCurrentProject('P2');
+  api.setState(['P2|UID:X']);
+  oldProjectResponse.resolve({ success: true });
+
+  const result = await oldProjectSave;
+  assert.equal(result.isLatest, true);
+  assert.equal(api.apply(result, 'P1'), false);
+  assert.deepEqual(Array.from(api.getState().ids), ['P2|UID:X']);
+  assert.equal(api.getState().projectKey, 'P2');
+  assert.deepEqual(cacheWrites, []);
+
+  const toggleSource = extractFunction(appSource, 'toggleMainMilestone');
+  assert.match(
+    toggleSource,
+    /if \(!qltdMainMilestoneApplySaveResult\(result, projectKey\)\) return;\s+if \(!result\.success\)/
+  );
+  assert.match(toggleSource, /updateMainMilestoneToolbarState\(\);\s+renderDashboardFromGanttData/);
 });
 
 test('A becomes stale during backoff and only the newly selected B is current', () => {

@@ -45,6 +45,11 @@ assert.doesNotMatch(viewLifecycle, /setTimeout\(/, 'Gantt activation must not re
 const loadGantt = extractFunction(appSource, 'qltdWeb07LoadGanttDataForSelectedProject', 'renderDashboardLoading');
 assert.match(loadGantt, /loadProjectScheduleState\(projectCode,\s*\{\s*render:\s*false\s*\}\)/);
 assert.match(loadGantt, /await scheduleStateRequest/);
+assert.match(
+  loadGantt,
+  /await loadMainMilestonesForProject\(projectCode,\s*payload\);\s*if \(!qltdWeb07IsCurrentGanttLoad\(projectCode,\s*requestSeq\)\) return payload;/,
+  'Recalc reload must not render a stale project after milestone hydration.'
+);
 
 const approvalDirty = extractFunction(appSource, 'markMasterApprovalDataDirty', 'escapeHtml');
 assert.match(approvalDirty, /scheduleState:\s*'DIRTY'/);
@@ -55,6 +60,7 @@ assert.match(dispatcherSource, /qltdProjectScheduleGetStateApi_/);
 assert.match(dispatcherSource, /action === 'recalculateprojectschedule'/);
 assert.match(dispatcherSource, /qltdProjectScheduleRecalculate_/);
 assert.match(indexSource, /app\.js\?v=GANTT_REQUEST_RACE_HOTFIX_3/);
+assert.match(indexSource, /MAIN_MILESTONE_UID_V4/);
 assert.match(indexSource, /__QLTD_GANTT_PATCH_ROUND__ = 'GANTT_REQUEST_RACE_HOTFIX_3'/);
 
 console.log('Project schedule recalculation frontend: PASS');
