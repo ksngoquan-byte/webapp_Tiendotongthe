@@ -78,6 +78,13 @@ const qltdGanttBudgetLoadingProjects = new Set();
 const qltdGanttDataRequests = new Map();
 let qltdGanttRequestTail = Promise.resolve();
 let qltdGanttLoadRequestSeq = 0;
+let qltdGanttBaselineComparisonEnabled = false;
+let qltdGanttBaselineRequestSeq = 0;
+const qltdGanttBaselineProjectStates = new Map();
+const qltdGanttBaselineVersionsCache = new Map();
+const qltdGanttBaselinePayloadCache = new Map();
+const qltdGanttBaselineRequests = new Map();
+let qltdGanttBaselineLayerBinding = { gantt: null, layerId: null };
 const QLTD_GANTT_REQUEST_TIMEOUT_MS = 40000;
 const QLTD_GANTT_BUSY_RETRY_DELAY_MS = 1500;
 const QLTD_GANTT_BUSY_MAX_DELAY_MS = 6000;
@@ -753,6 +760,7 @@ function renderProjectOptions(projects = []) {
   selector.disabled = false;
   selector.onchange = () => {
     setStoredProjectCode(selector.value);
+    qltdGanttBaselineHandleProjectChange_(selector.value);
     if (qltdActiveView === 'report') loadDeptPlansForSelectedProject(selector.value);
     if (qltdActiveView === 'budget') loadBudgetDashboardForSelectedProject({ force: true });
     if (qltdActiveView === 'admin') loadAdminMasterApprovals();
@@ -7402,6 +7410,834 @@ async function handleGanttBudgetSyncClick(button, payload) {
   }
 }
 
+function qltdGanttBaselineNormalizeTaskCode_(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function qltdGanttBaselineNormalizeRef_(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+function qltdGanttBaselineIsCurrentBusinessTask_(task) {
+  const rowType = String(task?.rowType || '').trim().toUpperCase();
+  return rowType ? rowType === 'TASK' || rowType === 'MILESTONE' : true;
+}
+
+function qltdGanttBaselineCurrentTaskCode_(task) {
+  return qltdGanttBaselineNormalizeTaskCode_(
+    task?.taskCode || task?.code || task?.masterTaskCode || ''
+  );
+}
+
+function qltdGanttBaselineCurrentRef_(task) {
+  const explicitRef = qltdGanttBaselineNormalizeRef_(task?.refId);
+  if (explicitRef) return explicitRef;
+  // ganttData maps Cong_viec column G (ID/SO_THAM_CHIEU) to task.id, while
+  // baseline snapshots copy that same source cell to Ref goc. The context
+  // resolver strips its equivalent refId field from the public Gantt payload.
+  const fallbackId = qltdGanttBaselineNormalizeRef_(task?.id);
+  return /^ROW-\d+$/i.test(fallbackId) ? '' : fallbackId;
+}
+
+function qltdGanttBaselineCurrentStart_(task) {
+  const planned = String(
+    task?.plannedStart ||
+    task?.planned_start ||
+    task?.planStart ||
+    task?.baselineStart ||
+    ''
+  ).trim();
+  const hasPlannedField = [
+    'plannedStart',
+    'planned_start',
+    'planStart',
+    'baselineStart'
+  ].some((field) => Object.prototype.hasOwnProperty.call(task || {}, field));
+  return hasPlannedField ? planned : String(task?.start_date || '').trim();
+}
+
+function qltdGanttBaselineCurrentEnd_(task) {
+  const planned = String(
+    task?.plannedEnd ||
+    task?.planned_end ||
+    task?.planFinish ||
+    task?.baselineEnd ||
+    ''
+  ).trim();
+  const hasPlannedField = [
+    'plannedEnd',
+    'planned_end',
+    'planFinish',
+    'baselineEnd'
+  ].some((field) => Object.prototype.hasOwnProperty.call(task || {}, field));
+  return hasPlannedField ? planned : String(task?.end_date || '').trim();
+}
+
+function qltdGanttBaselineParseIsoUtc_(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const timestamp = Date.UTC(year, month - 1, day);
+  const date = new Date(timestamp);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return {
+    iso: text,
+    ordinal: Math.floor(timestamp / 86400000)
+  };
+}
+
+function qltdGanttBaselineDateForGantt_(value) {
+  const parsed = qltdGanttBaselineParseIsoUtc_(value);
+  if (!parsed) return null;
+  const parts = parsed.iso.split('-').map(Number);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function qltdGanttBaselineBuildIndex_(items, keyGetter) {
+  const index = new Map();
+  (items || []).forEach((item) => {
+    const key = keyGetter(item);
+    if (!key) return;
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(item);
+  });
+  return index;
+}
+
+function qltdGanttBaselineUniqueCandidates_(items) {
+  const seen = new Set();
+  return (items || []).filter((item) => {
+    if (!item || seen.has(item.index)) return false;
+    seen.add(item.index);
+    return true;
+  });
+}
+
+function qltdGanttBaselineEvaluateMatched_(currentEntry, baselineEntry, version, matchType) {
+  const currentStart = qltdGanttBaselineCurrentStart_(currentEntry.task);
+  const currentEnd = qltdGanttBaselineCurrentEnd_(currentEntry.task);
+  const baselineStart = String(baselineEntry.record.baselineStart || '').trim();
+  const baselineEnd = String(baselineEntry.record.baselineEnd || '').trim();
+  const parsedCurrentStart = qltdGanttBaselineParseIsoUtc_(currentStart);
+  const parsedCurrentEnd = qltdGanttBaselineParseIsoUtc_(currentEnd);
+  const parsedBaselineStart = qltdGanttBaselineParseIsoUtc_(baselineStart);
+  const parsedBaselineEnd = qltdGanttBaselineParseIsoUtc_(baselineEnd);
+  const base = {
+    currentId: String(currentEntry.task.id || ''),
+    currentTask: currentEntry.task,
+    baseline: baselineEntry.record,
+    version,
+    matchType,
+    currentStart,
+    currentEnd,
+    baselineStart,
+    baselineEnd,
+    startDeltaDays: null,
+    endDeltaDays: null
+  };
+
+  if (!parsedCurrentStart || !parsedCurrentEnd || !parsedBaselineStart || !parsedBaselineEnd) {
+    return {
+      ...base,
+      status: 'INSUFFICIENT_DATES',
+      label: 'Chưa đủ ngày để đánh giá'
+    };
+  }
+
+  const startDeltaDays = parsedCurrentStart.ordinal - parsedBaselineStart.ordinal;
+  const endDeltaDays = parsedCurrentEnd.ordinal - parsedBaselineEnd.ordinal;
+  if (endDeltaDays > 0) {
+    return {
+      ...base,
+      startDeltaDays,
+      endDeltaDays,
+      status: 'DELAYED',
+      label: `Kế hoạch đã dời +${endDeltaDays} ngày`
+    };
+  }
+  if (endDeltaDays < 0) {
+    return {
+      ...base,
+      startDeltaDays,
+      endDeltaDays,
+      status: 'SHORTENED',
+      label: `Kế hoạch rút ngắn ${Math.abs(endDeltaDays)} ngày`
+    };
+  }
+  if (startDeltaDays !== 0) {
+    return {
+      ...base,
+      startDeltaDays,
+      endDeltaDays,
+      status: 'START_SHIFT_SAME_END',
+      label: 'Dời ngày bắt đầu, vẫn giữ hạn'
+    };
+  }
+  return {
+    ...base,
+    startDeltaDays,
+    endDeltaDays,
+    status: 'UNCHANGED',
+    label: 'Không thay đổi'
+  };
+}
+
+function qltdGanttBaselineBuildComparisonModel_(currentTasks, baselineRecords, baselineMeta = {}) {
+  const version = String(baselineMeta.version || '').trim().toUpperCase();
+  const currentEntries = (currentTasks || [])
+    .filter(qltdGanttBaselineIsCurrentBusinessTask_)
+    .map((task, index) => ({
+      index,
+      task,
+      taskCode: qltdGanttBaselineCurrentTaskCode_(task),
+      refId: qltdGanttBaselineCurrentRef_(task)
+    }));
+  const baselineEntries = (baselineRecords || []).map((record, index) => ({
+    index,
+    record,
+    taskCode: qltdGanttBaselineNormalizeTaskCode_(record?.taskCode),
+    refId: qltdGanttBaselineNormalizeRef_(record?.refId)
+  }));
+  const currentByCode = qltdGanttBaselineBuildIndex_(currentEntries, (entry) => entry.taskCode);
+  const baselineByCode = qltdGanttBaselineBuildIndex_(baselineEntries, (entry) => entry.taskCode);
+  const currentByRef = qltdGanttBaselineBuildIndex_(currentEntries, (entry) => entry.refId);
+  const baselineByRef = qltdGanttBaselineBuildIndex_(baselineEntries, (entry) => entry.refId);
+  const matchedCurrent = new Set();
+  const matchedBaseline = new Set();
+  const ambiguousBaseline = new Set();
+  const currentResults = [];
+
+  function addMatch(currentEntry, baselineEntry, matchType) {
+    matchedCurrent.add(currentEntry.index);
+    matchedBaseline.add(baselineEntry.index);
+    currentResults.push(
+      qltdGanttBaselineEvaluateMatched_(currentEntry, baselineEntry, version, matchType)
+    );
+  }
+
+  currentEntries.forEach((currentEntry) => {
+    if (!currentEntry.taskCode) return;
+    const currentMatches = currentByCode.get(currentEntry.taskCode) || [];
+    const baselineMatches = baselineByCode.get(currentEntry.taskCode) || [];
+    if (currentMatches.length === 1 && baselineMatches.length === 1) {
+      addMatch(currentEntry, baselineMatches[0], 'MATCHED_BY_TASK_CODE');
+    }
+  });
+
+  currentEntries.forEach((currentEntry) => {
+    if (matchedCurrent.has(currentEntry.index) || !currentEntry.refId) return;
+    const currentMatches = currentByRef.get(currentEntry.refId) || [];
+    const baselineMatches = baselineByRef.get(currentEntry.refId) || [];
+    if (
+      currentMatches.length === 1 &&
+      baselineMatches.length === 1 &&
+      !matchedBaseline.has(baselineMatches[0].index)
+    ) {
+      addMatch(currentEntry, baselineMatches[0], 'MATCHED_BY_REF_ID');
+    }
+  });
+
+  currentEntries.forEach((currentEntry) => {
+    if (matchedCurrent.has(currentEntry.index)) return;
+    const candidates = qltdGanttBaselineUniqueCandidates_([
+      ...(currentEntry.taskCode ? baselineByCode.get(currentEntry.taskCode) || [] : []),
+      ...(currentEntry.refId ? baselineByRef.get(currentEntry.refId) || [] : [])
+    ]);
+    const currentStart = qltdGanttBaselineCurrentStart_(currentEntry.task);
+    const currentEnd = qltdGanttBaselineCurrentEnd_(currentEntry.task);
+    if (candidates.length || (!currentEntry.taskCode && !currentEntry.refId)) {
+      candidates.forEach((candidate) => {
+        if (!matchedBaseline.has(candidate.index)) ambiguousBaseline.add(candidate.index);
+      });
+      currentResults.push({
+        currentId: String(currentEntry.task.id || ''),
+        currentTask: currentEntry.task,
+        baseline: null,
+        version,
+        matchType: 'AMBIGUOUS',
+        status: 'AMBIGUOUS',
+        label: 'Chưa đủ dữ liệu đối chiếu',
+        currentStart,
+        currentEnd,
+        baselineStart: '',
+        baselineEnd: '',
+        startDeltaDays: null,
+        endDeltaDays: null,
+        candidateBaselineCount: candidates.length
+      });
+      return;
+    }
+    currentResults.push({
+      currentId: String(currentEntry.task.id || ''),
+      currentTask: currentEntry.task,
+      baseline: null,
+      version,
+      matchType: 'CURRENT_ONLY',
+      status: 'CURRENT_ONLY',
+      label: `Phát sinh sau ${version || 'baseline'}`,
+      currentStart,
+      currentEnd,
+      baselineStart: '',
+      baselineEnd: '',
+      startDeltaDays: null,
+      endDeltaDays: null
+    });
+  });
+
+  const baselineOnly = baselineEntries
+    .filter((entry) => !matchedBaseline.has(entry.index) && !ambiguousBaseline.has(entry.index))
+    .map((entry) => ({
+      baseline: entry.record,
+      version,
+      matchType: 'BASELINE_ONLY',
+      status: 'BASELINE_ONLY',
+      label: 'Đã loại khỏi kế hoạch hiện hành'
+    }));
+  const ambiguousBaselineRecords = baselineEntries
+    .filter((entry) => ambiguousBaseline.has(entry.index))
+    .map((entry) => entry.record);
+  const resultByCurrentId = new Map();
+  currentResults.forEach((result) => {
+    if (result.currentId) resultByCurrentId.set(result.currentId, result);
+  });
+
+  return {
+    version,
+    baselineMeta: { ...baselineMeta, version },
+    currentResults,
+    baselineOnly,
+    ambiguousBaselineRecords,
+    resultByCurrentId
+  };
+}
+
+function qltdGanttBaselineBuildKpis_(model) {
+  const counts = {
+    UNCHANGED: 0,
+    DELAYED: 0,
+    SHORTENED: 0,
+    START_SHIFT_SAME_END: 0,
+    CURRENT_ONLY: 0,
+    BASELINE_ONLY: Array.isArray(model?.baselineOnly) ? model.baselineOnly.length : 0,
+    INSUFFICIENT_DATES: 0,
+    AMBIGUOUS: 0
+  };
+  const matching = {
+    MATCHED_BY_TASK_CODE: 0,
+    MATCHED_BY_REF_ID: 0,
+    AMBIGUOUS: 0
+  };
+  (model?.currentResults || []).forEach((result) => {
+    if (Object.prototype.hasOwnProperty.call(counts, result.status)) {
+      counts[result.status] += 1;
+    }
+    if (Object.prototype.hasOwnProperty.call(matching, result.matchType)) {
+      matching[result.matchType] += 1;
+    }
+  });
+  const evaluationDenominator = [
+    'UNCHANGED',
+    'DELAYED',
+    'SHORTENED',
+    'START_SHIFT_SAME_END'
+  ].reduce((total, status) => total + counts[status], 0);
+  return {
+    counts,
+    matching,
+    evaluationDenominator,
+    ambiguousExcluded: counts.AMBIGUOUS
+  };
+}
+
+function qltdGanttBaselineApplyComparisonToTasks_(tasks, model) {
+  if (!model?.resultByCurrentId) return (tasks || []).map((task) => ({ ...task }));
+  return (tasks || []).map((task) => {
+    const result = model.resultByCurrentId.get(String(task?.id || ''));
+    if (!result) return { ...task };
+    return {
+      ...task,
+      start_date: result.currentStart || '',
+      end_date: result.currentEnd || '',
+      _qltdBaselineComparison: {
+        ...result,
+        baselineMeta: model.baselineMeta
+      }
+    };
+  });
+}
+
+function qltdGanttBaselineFilterMatches_(result, filterValue) {
+  const filter = String(filterValue || 'all');
+  if (filter === 'all') return true;
+  if (!result) return false;
+  if (filter === 'INSUFFICIENT') {
+    return result.status === 'INSUFFICIENT_DATES' || result.status === 'AMBIGUOUS';
+  }
+  return result.status === filter;
+}
+
+function qltdGanttBaselineTypeLabel_(type) {
+  return String(type || '').trim().toUpperCase() === 'LAN_DAU'
+    ? 'Kế hoạch lần đầu'
+    : 'Điều chỉnh';
+}
+
+function qltdGanttBaselineStatusLabel_(status) {
+  const normalized = String(status || '').trim().toUpperCase();
+  if (normalized === 'ACTIVE') return 'Đang áp dụng';
+  if (normalized === 'REPLACED_INITIAL' || normalized === 'REPLACED') return 'Đã thay thế';
+  return 'Không sẵn sàng';
+}
+
+function qltdGanttBaselineMatchLabel_(matchType) {
+  if (matchType === 'MATCHED_BY_TASK_CODE') return 'taskCode';
+  if (matchType === 'MATCHED_BY_REF_ID') return 'refId';
+  if (matchType === 'CURRENT_ONLY') return 'current-only';
+  if (matchType === 'BASELINE_ONLY') return 'baseline-only';
+  return 'không xác định';
+}
+
+function qltdGanttBaselineSignedDays_(value) {
+  if (!Number.isFinite(value)) return '—';
+  if (value > 0) return `+${value} ngày`;
+  if (value < 0) return `${value} ngày`;
+  return '0 ngày';
+}
+
+function qltdGanttBaselineCreateProjectState_(projectCode) {
+  return {
+    projectCode: String(projectCode || '').trim(),
+    activeVersion: '',
+    selectedVersion: '',
+    versions: [],
+    loadingVersions: false,
+    loadingPayload: false,
+    error: '',
+    requestSeq: 0,
+    payload: null,
+    model: null,
+    modelCurrentTasks: null,
+    layerSupported: null
+  };
+}
+
+function qltdGanttBaselineGetProjectState_(projectCode) {
+  const code = String(projectCode || '').trim();
+  if (!code) return null;
+  if (!qltdGanttBaselineProjectStates.has(code)) {
+    qltdGanttBaselineProjectStates.set(code, qltdGanttBaselineCreateProjectState_(code));
+  }
+  return qltdGanttBaselineProjectStates.get(code);
+}
+
+function qltdGanttBaselinePayloadKey_(projectCode, version) {
+  return `${String(projectCode || '').trim()}::${String(version || '').trim().toUpperCase()}`;
+}
+
+function qltdGanttBaselineGetOrCreateRequest_(key, factory) {
+  const requestKey = String(key || '');
+  const existing = qltdGanttBaselineRequests.get(requestKey);
+  if (existing) return existing;
+  const request = Promise.resolve().then(factory);
+  qltdGanttBaselineRequests.set(requestKey, request);
+  const clear = () => {
+    if (qltdGanttBaselineRequests.get(requestKey) === request) {
+      qltdGanttBaselineRequests.delete(requestKey);
+    }
+  };
+  request.then(clear, clear);
+  return request;
+}
+
+async function qltdGanttBaselineFetchVersions_(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (qltdGanttBaselineVersionsCache.has(code)) {
+    return qltdGanttBaselineVersionsCache.get(code);
+  }
+  const fetcher = options.fetcher || fetchBackendJson;
+  return qltdGanttBaselineGetOrCreateRequest_(`versions::${code}`, async () => {
+    const response = await fetcher(
+      'ganttBaselineVersions',
+      { projectCode: code },
+      { auth: true }
+    );
+    if (
+      !response?.success ||
+      !String(response.activeVersion || '').trim() ||
+      !Array.isArray(response.versions)
+    ) {
+      throw new Error(
+        response?.errorMessage ||
+        response?.error?.message ||
+        response?.message ||
+        'Không tải được danh sách baseline.'
+      );
+    }
+    qltdGanttBaselineVersionsCache.set(code, response);
+    return response;
+  });
+}
+
+async function qltdGanttBaselineFetchPayload_(projectCode, version, options = {}) {
+  const code = String(projectCode || '').trim();
+  const normalizedVersion = String(version || '').trim().toUpperCase();
+  const cacheKey = qltdGanttBaselinePayloadKey_(code, normalizedVersion);
+  if (qltdGanttBaselinePayloadCache.has(cacheKey)) {
+    return qltdGanttBaselinePayloadCache.get(cacheKey);
+  }
+  const fetcher = options.fetcher || fetchBackendJson;
+  return qltdGanttBaselineGetOrCreateRequest_(`payload::${cacheKey}`, async () => {
+    const response = await fetcher(
+      'ganttBaseline',
+      { projectCode: code, version: normalizedVersion },
+      { auth: true }
+    );
+    const returnedVersion = String(response?.baseline?.version || '').trim().toUpperCase();
+    if (!response?.success || !response?.available || returnedVersion !== normalizedVersion) {
+      throw new Error(
+        response?.errorMessage ||
+        response?.error?.message ||
+        response?.message ||
+        `Không tải được baseline ${normalizedVersion}.`
+      );
+    }
+    qltdGanttBaselinePayloadCache.set(cacheKey, response);
+    return response;
+  });
+}
+
+function qltdGanttBaselineSelectedProjectCode_() {
+  return String(
+    document.getElementById('projectSelector')?.value ||
+    getStoredProjectCode() ||
+    ''
+  ).trim();
+}
+
+function qltdGanttBaselineOwnsRequest_(projectCode, requestSeq, version = '') {
+  const state = qltdGanttBaselineGetProjectState_(projectCode);
+  const requestedVersion = String(version || '').trim().toUpperCase();
+  return !!state &&
+    qltdGanttBaselineComparisonEnabled &&
+    requestSeq === qltdGanttBaselineRequestSeq &&
+    state.requestSeq === requestSeq &&
+    qltdGanttBaselineSelectedProjectCode_() === String(projectCode || '').trim() &&
+    (!requestedVersion || state.selectedVersion === requestedVersion);
+}
+
+function qltdGanttBaselineRenderCurrentProject_(projectCode) {
+  const code = String(projectCode || '').trim();
+  if (
+    qltdActiveView === 'gantt' &&
+    qltdGanttPayload?.success &&
+    String(qltdGanttPayload.projectCode || '').trim() === code &&
+    qltdGanttBaselineSelectedProjectCode_() === code
+  ) {
+    renderGanttPanel(qltdGanttPayload);
+  }
+}
+
+function qltdGanttBaselineGetModel_(projectCode, currentTasks) {
+  const state = qltdGanttBaselineGetProjectState_(projectCode);
+  if (!state?.payload?.baseline || !Array.isArray(state.payload.data)) return null;
+  if (
+    !state.model ||
+    state.modelCurrentTasks !== currentTasks ||
+    state.model.version !== state.selectedVersion
+  ) {
+    state.model = qltdGanttBaselineBuildComparisonModel_(
+      currentTasks || [],
+      state.payload.data,
+      state.payload.baseline
+    );
+    state.modelCurrentTasks = currentTasks;
+  }
+  return state.model;
+}
+
+function qltdGanttBaselineIsRenderable_(projectCode, currentTasks = qltdGanttPayload?.data) {
+  const code = String(projectCode || '').trim();
+  const state = qltdGanttBaselineGetProjectState_(code);
+  return !!(
+    qltdGanttBaselineComparisonEnabled &&
+    qltdGanttViewMode === 'progress' &&
+    state?.payload?.success &&
+    state.payload?.baseline?.version === state.selectedVersion &&
+    qltdGanttBaselineGetModel_(code, currentTasks)
+  );
+}
+
+async function qltdGanttBaselineLoadSelectedVersion_(projectCode, requestSeq, options = {}) {
+  const code = String(projectCode || '').trim();
+  const state = qltdGanttBaselineGetProjectState_(code);
+  if (!state?.selectedVersion) return null;
+  const requestedVersion = state.selectedVersion;
+  state.loadingPayload = true;
+  state.payload = null;
+  state.model = null;
+  state.modelCurrentTasks = null;
+  state.error = '';
+  qltdGanttBaselineRenderCurrentProject_(code);
+
+  try {
+    const payload = await qltdGanttBaselineFetchPayload_(
+      code,
+      requestedVersion,
+      options
+    );
+    if (!qltdGanttBaselineOwnsRequest_(code, requestSeq, requestedVersion)) {
+      return payload;
+    }
+    state.loadingPayload = false;
+    state.payload = payload;
+    state.model = null;
+    state.modelCurrentTasks = null;
+    state.error = '';
+    qltdGanttBaselineRenderCurrentProject_(code);
+    return payload;
+  } catch (error) {
+    if (!qltdGanttBaselineOwnsRequest_(code, requestSeq, requestedVersion)) {
+      return null;
+    }
+    state.loadingPayload = false;
+    state.payload = null;
+    state.model = null;
+    state.modelCurrentTasks = null;
+    state.error = error?.message || String(error);
+    qltdGanttBaselineRenderCurrentProject_(code);
+    return null;
+  }
+}
+
+async function qltdGanttBaselineActivateProject_(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code || !qltdGanttBaselineComparisonEnabled) return null;
+  const state = qltdGanttBaselineGetProjectState_(code);
+  const requestSeq = ++qltdGanttBaselineRequestSeq;
+  state.requestSeq = requestSeq;
+  state.loadingVersions = true;
+  state.loadingPayload = false;
+  state.error = '';
+  if (options.resetToActive) {
+    state.selectedVersion = '';
+    state.payload = null;
+    state.model = null;
+    state.modelCurrentTasks = null;
+  }
+  qltdGanttBaselineRenderCurrentProject_(code);
+
+  try {
+    const response = await qltdGanttBaselineFetchVersions_(code, options);
+    if (!qltdGanttBaselineOwnsRequest_(code, requestSeq)) return response;
+    const activeVersion = String(response.activeVersion || '').trim().toUpperCase();
+    const versions = response.versions.map((entry) => ({
+      ...entry,
+      version: String(entry?.version || '').trim().toUpperCase()
+    }));
+    const activeEntry = versions.find((entry) => (
+      entry.version === activeVersion && entry.available !== false
+    ));
+    if (!activeEntry) {
+      throw new Error(`Baseline ACTIVE ${activeVersion} không sẵn sàng.`);
+    }
+    state.activeVersion = activeVersion;
+    state.versions = versions;
+    if (
+      options.resetToActive ||
+      !state.selectedVersion ||
+      !versions.some((entry) => (
+        entry.version === state.selectedVersion && entry.available !== false
+      ))
+    ) {
+      state.selectedVersion = activeVersion;
+    }
+    state.loadingVersions = false;
+    qltdGanttBaselineRenderCurrentProject_(code);
+    return qltdGanttBaselineLoadSelectedVersion_(code, requestSeq, options);
+  } catch (error) {
+    if (!qltdGanttBaselineOwnsRequest_(code, requestSeq)) return null;
+    state.loadingVersions = false;
+    state.loadingPayload = false;
+    state.payload = null;
+    state.model = null;
+    state.modelCurrentTasks = null;
+    state.error = error?.message || String(error);
+    qltdGanttBaselineRenderCurrentProject_(code);
+    return null;
+  }
+}
+
+function qltdGanttBaselineToggle_(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code || qltdGanttViewMode !== 'progress') return;
+  const state = qltdGanttBaselineGetProjectState_(code);
+  if (qltdGanttBaselineComparisonEnabled) {
+    qltdGanttBaselineComparisonEnabled = false;
+    const requestSeq = ++qltdGanttBaselineRequestSeq;
+    state.requestSeq = requestSeq;
+    state.loadingVersions = false;
+    state.loadingPayload = false;
+    state.error = '';
+    qltdGanttBaselineRenderCurrentProject_(code);
+    return null;
+  }
+  qltdGanttBaselineComparisonEnabled = true;
+  return qltdGanttBaselineActivateProject_(code, {
+    ...options,
+    resetToActive: true
+  });
+}
+
+function qltdGanttBaselineSelectVersion_(projectCode, version, options = {}) {
+  const code = String(projectCode || '').trim();
+  const normalizedVersion = String(version || '').trim().toUpperCase();
+  const state = qltdGanttBaselineGetProjectState_(code);
+  const entry = state?.versions?.find((item) => item.version === normalizedVersion);
+  if (
+    !qltdGanttBaselineComparisonEnabled ||
+    !entry ||
+    entry.available === false ||
+    normalizedVersion === state.selectedVersion
+  ) {
+    return;
+  }
+  state.selectedVersion = normalizedVersion;
+  const requestSeq = ++qltdGanttBaselineRequestSeq;
+  state.requestSeq = requestSeq;
+  return qltdGanttBaselineLoadSelectedVersion_(code, requestSeq, options);
+}
+
+function qltdGanttBaselineHandleProjectChange_(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!qltdGanttBaselineComparisonEnabled || !code) {
+    ++qltdGanttBaselineRequestSeq;
+    return;
+  }
+  return qltdGanttBaselineActivateProject_(code, {
+    ...options,
+    resetToActive: true
+  });
+}
+
+function qltdGanttBaselineFormatVersionOption_(entry) {
+  const createdAt = entry?.createdAt
+    ? ` · ${formatIsoDateVi(String(entry.createdAt).slice(0, 10))}`
+    : '';
+  return [
+    entry?.version || '',
+    qltdGanttBaselineTypeLabel_(entry?.type),
+    qltdGanttBaselineStatusLabel_(entry?.status),
+    `${Number(entry?.taskCount || 0)} việc`
+  ].join(' · ') + createdAt;
+}
+
+function qltdGanttBaselineRenderControls_(projectCode) {
+  const code = String(projectCode || '').trim();
+  const state = qltdGanttBaselineGetProjectState_(code);
+  const enabled = qltdGanttBaselineComparisonEnabled && qltdGanttViewMode === 'progress';
+  const disabledInBudget = qltdGanttViewMode === 'budget';
+  const toggle = `
+    <button
+      id="ganttBaselineComparisonToggle"
+      type="button"
+      class="${enabled ? 'active' : ''}"
+      aria-pressed="${enabled ? 'true' : 'false'}"
+      ${disabledInBudget ? 'disabled title="Chỉ dùng trong Gantt tiến độ"' : ''}
+    >Đánh giá với KH gốc</button>
+  `;
+  if (!enabled) return toggle;
+  const options = (state?.versions || []).map((entry) => `
+    <option
+      value="${escapeHtml(entry.version || '')}"
+      ${entry.version === state.selectedVersion ? 'selected' : ''}
+      ${entry.available === false ? 'disabled' : ''}
+    >${escapeHtml(qltdGanttBaselineFormatVersionOption_(entry))}</option>
+  `).join('');
+  return `
+    ${toggle}
+    <select
+      id="ganttBaselineVersionSelect"
+      ${state?.loadingVersions || !options ? 'disabled' : ''}
+      aria-label="Phiên bản baseline"
+    >
+      ${options || '<option value="">Đang tải phiên bản...</option>'}
+    </select>
+    <select id="ganttBaselineComparisonFilter" aria-label="Lọc đánh giá">
+      <option value="all">Tất cả đánh giá</option>
+      <option value="DELAYED">Kế hoạch đã dời</option>
+      <option value="SHORTENED">Kế hoạch rút ngắn</option>
+      <option value="UNCHANGED">Không thay đổi</option>
+      <option value="CURRENT_ONLY">Phát sinh sau baseline</option>
+      <option value="INSUFFICIENT">Chưa đủ dữ liệu đối chiếu</option>
+    </select>
+  `;
+}
+
+function qltdGanttBaselineRenderSummary_(payload) {
+  const projectCode = String(payload?.projectCode || '').trim();
+  const state = qltdGanttBaselineGetProjectState_(projectCode);
+  if (!qltdGanttBaselineComparisonEnabled || qltdGanttViewMode !== 'progress') return '';
+  if (state?.error) {
+    return `<div class="qltd-baseline-notice is-error">Không tải được ${escapeHtml(state.selectedVersion || 'baseline')}: ${escapeHtml(state.error)}. Không tự chuyển sang phiên bản khác.</div>`;
+  }
+  if (state?.loadingVersions || state?.loadingPayload || !state?.payload) {
+    return '<div class="qltd-baseline-notice">Đang tải dữ liệu đối chiếu baseline...</div>';
+  }
+  const model = qltdGanttBaselineGetModel_(projectCode, payload.data || []);
+  if (!model) return '';
+  const kpis = qltdGanttBaselineBuildKpis_(model);
+  const historicalWarning = state.selectedVersion !== state.activeVersion
+    ? `<div class="qltd-baseline-notice is-history">Đang xem phiên bản lịch sử ${escapeHtml(state.selectedVersion)}. Chuẩn điều hành hiện hành là ${escapeHtml(state.activeVersion)}.</div>`
+    : '';
+  const layerWarning = `<div id="ganttBaselineLayerNotice" class="qltd-baseline-notice ${state.layerSupported === false ? '' : 'hidden'}">Trình Gantt hiện tại không hỗ trợ baseline layer; bảng đánh giá vẫn dùng được và Gantt hiện hành không bị thay đổi.</div>`;
+  const cards = [
+    ['Không thay đổi', kpis.counts.UNCHANGED],
+    ['Kế hoạch đã dời', kpis.counts.DELAYED],
+    ['Kế hoạch rút ngắn', kpis.counts.SHORTENED],
+    ['Dời ngày bắt đầu, vẫn giữ hạn', kpis.counts.START_SHIFT_SAME_END],
+    [`Phát sinh sau ${state.selectedVersion}`, kpis.counts.CURRENT_ONLY],
+    ['Đã loại khỏi kế hoạch hiện hành', kpis.counts.BASELINE_ONLY],
+    ['Chưa đủ dữ liệu đối chiếu', kpis.counts.INSUFFICIENT_DATES + kpis.counts.AMBIGUOUS]
+  ];
+  const baselineOnly = model.baselineOnly || [];
+  return `
+    ${historicalWarning}
+    ${layerWarning}
+    <section class="qltd-baseline-summary" aria-label="So với ${escapeHtml(state.selectedVersion)}">
+      <header>
+        <strong>So với ${escapeHtml(state.selectedVersion)}</strong>
+        <span>Khớp theo mã: ${kpis.matching.MATCHED_BY_TASK_CODE} · Khớp theo Ref: ${kpis.matching.MATCHED_BY_REF_ID} · Không xác định: ${kpis.matching.AMBIGUOUS}</span>
+      </header>
+      <div class="qltd-baseline-kpis">
+        ${cards.map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${Number(value || 0)}</strong></article>`).join('')}
+      </div>
+      ${baselineOnly.length ? `
+        <details class="qltd-baseline-removed">
+          <summary>Đã loại khỏi kế hoạch hiện hành (${baselineOnly.length})</summary>
+          <ul>
+            ${baselineOnly.map((item) => `
+              <li>
+                <strong>${escapeHtml(item.baseline?.taskCode || item.baseline?.refId || '')}</strong>
+                <span>${escapeHtml(item.baseline?.text || '')}</span>
+              </li>
+            `).join('')}
+          </ul>
+        </details>
+      ` : ''}
+    </section>
+  `;
+}
+
 function renderGanttPanel(payload) {
   const panel = document.getElementById('web07GanttPanel');
   if (!panel) return;
@@ -7442,6 +8278,7 @@ function renderGanttPanel(payload) {
           <button type="button" data-gantt-view-mode="progress" class="${qltdGanttViewMode === 'progress' ? 'active' : ''}">Gantt tiến độ</button>
           <button type="button" data-gantt-view-mode="budget" class="${qltdGanttViewMode === 'budget' ? 'active' : ''}">Gantt ngân sách</button>
         </nav>
+        ${qltdGanttBaselineRenderControls_(payload.projectCode)}
         <input id="ganttSearchInput" type="search" placeholder="Tìm công việc/WBS">
         <select id="ganttOwnerFilter">
           <option value="">Tất cả</option>
@@ -7505,6 +8342,7 @@ function renderGanttPanel(payload) {
         <button id="ganttReloadButton" type="button">Reload</button>
       </div>
 
+      ${qltdGanttBaselineRenderSummary_(payload)}
       ${payload.links && payload.links.length ? '' : '<p class="web07-muted">Chưa có mũi tên dependency: không có liên kết hoặc chưa parse được cột Công việc liên kết.</p>'}
       <div id="web07GanttContainer" class="web07-gantt-box"></div>
     </div>
@@ -7526,7 +8364,7 @@ function renderGanttPanel(payload) {
 }
 
 function bindGanttToolbar(payload) {
-  const controls = ['ganttSearchInput', 'ganttOwnerFilter', 'ganttZoneFilter', 'ganttHangMucFilter', 'ganttStatusFilter', 'ganttProgressFilter', 'ganttDepthFilter'];
+  const controls = ['ganttSearchInput', 'ganttOwnerFilter', 'ganttZoneFilter', 'ganttHangMucFilter', 'ganttStatusFilter', 'ganttProgressFilter', 'ganttDepthFilter', 'ganttBaselineComparisonFilter'];
   controls.forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.oninput = applyGanttFilters;
@@ -7542,6 +8380,21 @@ function bindGanttToolbar(payload) {
       renderGanttPanel(payload);
     };
   });
+
+  const baselineToggle = document.getElementById('ganttBaselineComparisonToggle');
+  if (baselineToggle) {
+    baselineToggle.onclick = () => qltdGanttBaselineToggle_(
+      payload.projectCode || getStoredProjectCode()
+    );
+  }
+
+  const baselineVersion = document.getElementById('ganttBaselineVersionSelect');
+  if (baselineVersion) {
+    baselineVersion.onchange = () => qltdGanttBaselineSelectVersion_(
+      payload.projectCode || getStoredProjectCode(),
+      baselineVersion.value
+    );
+  }
 
   const linksToggle = document.getElementById('ganttLinksToggle');
   if (linksToggle) {
@@ -7619,7 +8472,17 @@ function applyGanttFilters() {
   const status = document.getElementById('ganttStatusFilter')?.value || 'all';
   const progressFilter = document.getElementById('ganttProgressFilter')?.value || 'all';
   const depthFilter = document.getElementById('ganttDepthFilter')?.value || 'all';
-  const allTasks = qltdGanttPayload.data || [];
+  const comparisonFilter = document.getElementById('ganttBaselineComparisonFilter')?.value || 'all';
+  const rawTasks = qltdGanttPayload.data || [];
+  const comparisonModel = qltdGanttBaselineIsRenderable_(
+    qltdGanttPayload.projectCode,
+    rawTasks
+  )
+    ? qltdGanttBaselineGetModel_(qltdGanttPayload.projectCode, rawTasks)
+    : null;
+  const allTasks = comparisonModel
+    ? qltdGanttBaselineApplyComparisonToTasks_(rawTasks, comparisonModel)
+    : rawTasks;
   if (qltdGanttViewMode === 'budget') ensureGanttBudgetMapForProject(qltdGanttPayload.projectCode || getStoredProjectCode());
   const byMasterTaskCode = qltdGanttViewMode === 'budget'
     ? getGanttBudgetMapForProject(qltdGanttPayload.projectCode || getStoredProjectCode())
@@ -7627,9 +8490,10 @@ function applyGanttFilters() {
   const byId = {};
   allTasks.forEach((task) => { byId[String(task.id)] = task; });
   const hasActiveFilter = !!search || !!owner || !!zone || !!hangMuc ||
-    status !== 'all' || progressFilter !== 'all' || depthFilter !== 'all';
+    status !== 'all' || progressFilter !== 'all' || depthFilter !== 'all' ||
+    comparisonFilter !== 'all';
   const hasBusinessFilter = !!search || !!owner || !!zone || !!hangMuc ||
-    status !== 'all' || progressFilter !== 'all';
+    status !== 'all' || progressFilter !== 'all' || comparisonFilter !== 'all';
   const matchedTasks = hasActiveFilter ? allTasks.filter((task) => {
     const matchSearch = !search || normalizeSearchText(`${task.wbs || ''} ${task.id || ''} ${task.code || ''} ${task.text || ''} ${task.zone || ''} ${task.hangMuc || ''} ${task.contextPath || ''}`).includes(search);
     const taskOwner = task.owner || '__blank__';
@@ -7638,12 +8502,17 @@ function applyGanttFilters() {
     const matchHangMuc = !hangMuc || String(task.hangMuc || '') === hangMuc;
     const matchStatus = status === 'all' || normalizeStatusForFilter(task.status) === status;
     const matchProgress = progressFilter === 'all' || getScheduleState(task) === progressFilter;
+    const matchComparison = qltdGanttBaselineFilterMatches_(
+      task._qltdBaselineComparison,
+      comparisonFilter
+    );
     const matchDepth = shouldShowByDepth(task, depthFilter);
     const matchRowType = depthFilter === 'main-milestones'
       ? isGanttBusinessRow(task, depthFilter)
       : (!hasBusinessFilter || isGanttBusinessRow(task, depthFilter));
     return matchRowType &&
-      matchSearch && matchOwner && matchZone && matchHangMuc && matchStatus && matchProgress && matchDepth;
+      matchSearch && matchOwner && matchZone && matchHangMuc && matchStatus &&
+      matchProgress && matchComparison && matchDepth;
   }) : allTasks.slice();
 
   const visibleIds = {};
@@ -7896,6 +8765,133 @@ function qltdWeb07EnsureGanttPolishStyles() {
       white-space: nowrap;
     }
 
+    .qltd-baseline-notice {
+      margin: 10px 0;
+      padding: 9px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #f8fafc;
+      color: #334155;
+      font-size: 13px;
+    }
+
+    .qltd-baseline-notice.is-history {
+      border-color: #93c5fd;
+      background: #eff6ff;
+      color: #1e3a8a;
+    }
+
+    .qltd-baseline-notice.is-error {
+      border-color: #fecaca;
+      background: #fff7f7;
+      color: #991b1b;
+    }
+
+    .qltd-baseline-summary {
+      margin: 10px 0 12px;
+      padding: 12px;
+      border: 1px solid #dbe3ec;
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    .qltd-baseline-summary > header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+      color: #334155;
+      font-size: 13px;
+    }
+
+    .qltd-baseline-summary > header strong {
+      color: #0f172a;
+      font-size: 15px;
+    }
+
+    .qltd-baseline-kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 8px;
+    }
+
+    .qltd-baseline-kpis article {
+      min-height: 58px;
+      padding: 9px 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+
+    .qltd-baseline-kpis span {
+      display: block;
+      color: #64748b;
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
+    .qltd-baseline-kpis strong {
+      display: block;
+      margin-top: 4px;
+      color: #0f172a;
+      font-size: 20px;
+    }
+
+    .qltd-baseline-removed {
+      margin-top: 10px;
+      color: #475569;
+      font-size: 12px;
+    }
+
+    .qltd-baseline-removed ul {
+      max-height: 180px;
+      overflow: auto;
+      margin: 8px 0 0;
+      padding-left: 22px;
+    }
+
+    .qltd-baseline-removed li {
+      margin: 4px 0;
+    }
+
+    .qltd-baseline-removed li strong {
+      margin-right: 8px;
+    }
+
+    #web07GanttContainer .qltd-gantt-baseline-layer {
+      position: absolute;
+      height: 7px;
+      border: 2px dashed #475569;
+      border-radius: 3px;
+      background: rgba(148, 163, 184, .78);
+      box-sizing: border-box;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    #web07GanttContainer .qltd-gantt-baseline-milestone {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      border: 2px solid #475569;
+      background: #94a3b8;
+      transform: rotate(45deg);
+      box-sizing: border-box;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    .qltd-baseline-result {
+      display: inline-block;
+      max-width: 176px;
+      overflow: hidden;
+      color: #475569;
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     #web07GanttContainer .gantt_task_line {
       height: 16px !important;
       line-height: 16px !important;
@@ -8141,6 +9137,12 @@ function qltdWeb07DecorateGanttToolbar() {
   const depth = toolbar.querySelector('#ganttDepthFilter');
   if (depth) qltdWeb07WrapToolbarControl(depth, 'Hiển thị đến');
 
+  const baselineVersion = toolbar.querySelector('#ganttBaselineVersionSelect');
+  if (baselineVersion) qltdWeb07WrapToolbarControl(baselineVersion, 'Baseline');
+
+  const baselineFilter = toolbar.querySelector('#ganttBaselineComparisonFilter');
+  if (baselineFilter) qltdWeb07WrapToolbarControl(baselineFilter, 'Đánh giá');
+
   const zoom = toolbar.querySelector('#ganttZoomSelect');
   if (zoom) qltdWeb07WrapToolbarControl(zoom, 'Zoom');
 }
@@ -8250,9 +9252,18 @@ function qltdWeb07GetGanttExportRange(gantt) {
   tasks.forEach((task) => {
     const start = task.start_date instanceof Date ? task.start_date : new Date(task.start_date);
     const end = task.end_date instanceof Date ? task.end_date : new Date(task.end_date);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return;
-    if (!minDate || start < minDate) minDate = start;
-    if (!maxDate || end > maxDate) maxDate = end;
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+      if (!minDate || start < minDate) minDate = start;
+      if (!maxDate || end > maxDate) maxDate = end;
+    }
+    const baselineStart = qltdGanttBaselineDateForGantt_(
+      task?._qltdBaselineComparison?.baseline?.baselineStart
+    );
+    const baselineEnd = qltdGanttBaselineDateForGantt_(
+      task?._qltdBaselineComparison?.baseline?.baselineEnd
+    );
+    if (baselineStart && (!minDate || baselineStart < minDate)) minDate = baselineStart;
+    if (baselineEnd && (!maxDate || baselineEnd > maxDate)) maxDate = baselineEnd;
   });
 
   if (!minDate || !maxDate) {
@@ -8531,6 +9542,24 @@ function qltdWeb07BuildGanttDataRows(gantt) {
       row.directChiPlan = task.directChiPlan ? Number(task.directChiPlan || 0) : '';
       row.plannedRevenue = task.plannedRevenue ? Number(task.plannedRevenue || 0) : '';
     }
+    if (
+      qltdGanttBaselineIsRenderable_(
+        qltdGanttPayload?.projectCode,
+        qltdGanttPayload?.data
+      )
+    ) {
+      const comparison = task._qltdBaselineComparison;
+      row.baselineVersion = comparison?.version || '';
+      row.selectedBaselineStart = comparison?.baseline?.baselineStart || '';
+      row.selectedBaselineEnd = comparison?.baseline?.baselineEnd || '';
+      row.baselineEndDelta = Number.isFinite(comparison?.endDeltaDays)
+        ? qltdGanttBaselineSignedDays_(comparison.endDeltaDays)
+        : '';
+      row.baselineAssessment = comparison?.label || '';
+      row.baselineMatchMethod = comparison
+        ? qltdGanttBaselineMatchLabel_(comparison.matchType)
+        : '';
+    }
     return row;
   });
 }
@@ -8554,6 +9583,21 @@ function qltdWeb07BuildGanttDataColumns() {
       0,
       { header: 'Trần chi phí trực tiếp', key: 'directChiPlan', width: 22 },
       { header: 'Dự thu kế hoạch', key: 'plannedRevenue', width: 20 }
+    );
+  }
+  if (
+    qltdGanttBaselineIsRenderable_(
+      qltdGanttPayload?.projectCode,
+      qltdGanttPayload?.data
+    )
+  ) {
+    columns.push(
+      { header: 'Baseline version', key: 'baselineVersion', width: 16 },
+      { header: 'BĐ baseline', key: 'selectedBaselineStart', width: 14 },
+      { header: 'KT baseline', key: 'selectedBaselineEnd', width: 14 },
+      { header: 'Chênh KT', key: 'baselineEndDelta', width: 14 },
+      { header: 'Đánh giá', key: 'baselineAssessment', width: 30 },
+      { header: 'Phương thức match', key: 'baselineMatchMethod', width: 20 }
     );
   }
   return columns;
@@ -8962,6 +10006,162 @@ function qltdWeb07BindExcelButton() {
   button.onclick = qltdWeb07ExportGanttExcel;
 }
 
+function qltdGanttBaselineBuildTooltipHtml_(task) {
+  const comparison = task?._qltdBaselineComparison;
+  if (!comparison) return '';
+  const baseline = comparison.baseline;
+  const metadata = comparison.baselineMeta || {};
+  return `
+    <hr>
+    <strong>KẾ HOẠCH GỐC — ${escapeHtml(comparison.version || '')}</strong><br>
+    Bắt đầu: ${escapeHtml(formatIsoDateVi(baseline?.baselineStart || '') || '—')}<br>
+    Kết thúc: ${escapeHtml(formatIsoDateVi(baseline?.baselineEnd || '') || '—')}<br>
+    Version: ${escapeHtml(comparison.version || '')}<br>
+    Loại: ${escapeHtml(qltdGanttBaselineTypeLabel_(metadata.type))}<br>
+    Trạng thái version: ${escapeHtml(qltdGanttBaselineStatusLabel_(metadata.status))}<br>
+    <br>
+    <strong>KẾ HOẠCH HIỆN HÀNH</strong><br>
+    Bắt đầu: ${escapeHtml(formatIsoDateVi(comparison.currentStart || '') || '—')}<br>
+    Kết thúc: ${escapeHtml(formatIsoDateVi(comparison.currentEnd || '') || '—')}<br>
+    <br>
+    <strong>ĐÁNH GIÁ</strong><br>
+    Chênh bắt đầu: ${escapeHtml(qltdGanttBaselineSignedDays_(comparison.startDeltaDays))}<br>
+    Chênh kết thúc: ${escapeHtml(qltdGanttBaselineSignedDays_(comparison.endDeltaDays))}<br>
+    Trạng thái: ${escapeHtml(comparison.label || '')}<br>
+    Phương thức match: ${escapeHtml(qltdGanttBaselineMatchLabel_(comparison.matchType))}<br>
+    <br>
+    <strong>THỰC HIỆN</strong><br>
+    Bắt đầu thực tế: ${escapeHtml(formatIsoDateVi(task.actualStart || '') || '—')}<br>
+    Hoàn thành thực tế: ${escapeHtml(formatIsoDateVi(task.actualEnd || task.actualFinish || '') || '—')}
+  `;
+}
+
+function qltdGanttBaselineGetRenderRange_(tasks) {
+  let minOrdinal = null;
+  let maxOrdinal = null;
+  (tasks || []).forEach((task) => {
+    const comparison = task?._qltdBaselineComparison;
+    [
+      task?.start_date,
+      task?.end_date,
+      comparison?.baseline?.baselineStart,
+      comparison?.baseline?.baselineEnd
+    ].forEach((value) => {
+      const parsed = qltdGanttBaselineParseIsoUtc_(
+        value instanceof Date ? toIsoDateLocal(value) : value
+      );
+      if (!parsed) return;
+      if (minOrdinal === null || parsed.ordinal < minOrdinal) minOrdinal = parsed.ordinal;
+      if (maxOrdinal === null || parsed.ordinal > maxOrdinal) maxOrdinal = parsed.ordinal;
+    });
+  });
+  if (minOrdinal === null || maxOrdinal === null) return null;
+  return {
+    start: qltdGanttBaselineDateForGantt_(
+      new Date((minOrdinal - 7) * 86400000).toISOString().slice(0, 10)
+    ),
+    end: qltdGanttBaselineDateForGantt_(
+      new Date((maxOrdinal + 7) * 86400000).toISOString().slice(0, 10)
+    )
+  };
+}
+
+function qltdGanttBaselineIsTaskVisibleInTree_(gantt, task) {
+  if (!gantt || !task) return false;
+  if (
+    typeof gantt.isTaskVisible === 'function' &&
+    !gantt.isTaskVisible(task.id)
+  ) {
+    return false;
+  }
+  const visited = new Set();
+  let parentId = String(task.parent || '0');
+  while (parentId && parentId !== '0' && !visited.has(parentId)) {
+    visited.add(parentId);
+    if (typeof gantt.getTask !== 'function') return false;
+    const parent = gantt.getTask(parentId);
+    if (!parent) return false;
+    if (parent.$open === false || parent.open === false) return false;
+    parentId = String(parent.parent || '0');
+  }
+  return true;
+}
+
+function qltdGanttBaselineRenderLayerTask_(gantt, task) {
+  const comparison = task?._qltdBaselineComparison;
+  const baseline = comparison?.baseline;
+  if (
+    !qltdGanttBaselineComparisonEnabled ||
+    qltdGanttViewMode !== 'progress' ||
+    !baseline ||
+    !qltdGanttBaselineIsTaskVisibleInTree_(gantt, task)
+  ) {
+    return null;
+  }
+  const start = qltdGanttBaselineDateForGantt_(baseline.baselineStart);
+  const end = qltdGanttBaselineDateForGantt_(baseline.baselineEnd);
+  if (!start || !end || typeof gantt.getTaskPosition !== 'function') return null;
+  const position = gantt.getTaskPosition(task, start, end);
+  if (!position) return null;
+  const isMilestone = !!baseline.milestoneCode || task.type === 'milestone';
+  const element = document.createElement('div');
+  element.className = isMilestone
+    ? 'qltd-gantt-baseline-milestone'
+    : 'qltd-gantt-baseline-layer';
+  element.style.left = `${Math.round(position.left - (isMilestone ? 5 : 0))}px`;
+  element.style.top = `${Math.round(position.top + (isMilestone ? 16 : 17))}px`;
+  if (!isMilestone) {
+    element.style.width = `${Math.max(3, Math.round(position.width || 0))}px`;
+  }
+  element.title = `Baseline ${comparison.version}: ${baseline.baselineStart} – ${baseline.baselineEnd}`;
+  return element;
+}
+
+function qltdGanttBaselineSetLayerSupported_(supported) {
+  const projectCode = String(qltdGanttPayload?.projectCode || '').trim();
+  const state = qltdGanttBaselineGetProjectState_(projectCode);
+  if (state) state.layerSupported = supported;
+  const notice = document.getElementById('ganttBaselineLayerNotice');
+  if (notice) notice.classList.toggle('hidden', supported !== false);
+}
+
+function qltdGanttBaselineEnsureLayer_(gantt) {
+  if (!gantt || typeof gantt.addTaskLayer !== 'function') {
+    qltdGanttBaselineSetLayerSupported_(false);
+    return false;
+  }
+  if (
+    qltdGanttBaselineLayerBinding.gantt === gantt &&
+    qltdGanttBaselineLayerBinding.layerId !== null
+  ) {
+    qltdGanttBaselineSetLayerSupported_(true);
+    return true;
+  }
+  const previous = qltdGanttBaselineLayerBinding;
+  if (
+    previous.gantt &&
+    previous.gantt !== gantt &&
+    previous.layerId !== null &&
+    previous.layerId !== true &&
+    typeof previous.gantt.removeTaskLayer === 'function'
+  ) {
+    try {
+      previous.gantt.removeTaskLayer(previous.layerId);
+    } catch (error) {
+      console.warn('Cannot remove previous baseline task layer', error);
+    }
+  }
+  const layerId = gantt.addTaskLayer((task) => (
+    qltdGanttBaselineRenderLayerTask_(gantt, task)
+  ));
+  qltdGanttBaselineLayerBinding = {
+    gantt,
+    layerId: layerId === undefined ? true : layerId
+  };
+  qltdGanttBaselineSetLayerSupported_(true);
+  return true;
+}
+
 function qltdBuildGanttColumns() {
   if (qltdGanttViewMode === 'budget') {
     return [
@@ -9025,6 +10225,27 @@ function qltdBuildGanttColumns() {
       template: (task) => qltdWeb07FormatDdMmYy(qltdWeb07GetTaskDisplayEnd(task))
     }
   ];
+  if (
+    qltdGanttBaselineIsRenderable_(
+      qltdGanttPayload?.projectCode,
+      qltdGanttPayload?.data
+    )
+  ) {
+    const state = qltdGanttBaselineGetProjectState_(qltdGanttPayload?.projectCode);
+    columns.push({
+      name: 'baselineComparison',
+      label: `So với ${state?.selectedVersion || ''}`,
+      width: 188,
+      align: 'left',
+      resize: true,
+      template: (task) => {
+        const label = task?._qltdBaselineComparison?.label || '';
+        return label
+          ? `<span class="qltd-baseline-result" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`
+          : '';
+      }
+    });
+  }
   if (qltdMainMilestoneSelectMode) {
     columns.unshift({
       name: 'mainMilestone',
@@ -9102,7 +10323,13 @@ async function initDhtmlxGantt(tasks, links) {
   gantt.config.open_tree_initially = true;
   gantt.config.show_links = qltdGanttShowLinks;
   gantt.config.grid_resize = true;
-  gantt.config.grid_width = qltdGanttViewMode === 'budget' ? 898 : (qltdMainMilestoneSelectMode ? 596 : 552);
+  const baselineComparisonGridWidth = qltdGanttBaselineIsRenderable_(
+    qltdGanttPayload?.projectCode,
+    qltdGanttPayload?.data
+  ) ? 188 : 0;
+  gantt.config.grid_width = qltdGanttViewMode === 'budget'
+    ? 898
+    : (qltdMainMilestoneSelectMode ? 596 : 552) + baselineComparisonGridWidth;
   gantt.config.row_height = 32;
   gantt.config.bar_height = 16;
   gantt.config.fit_tasks = true;
@@ -9113,8 +10340,23 @@ async function initDhtmlxGantt(tasks, links) {
   gantt.config.columns = qltdBuildGanttColumns();
 
   setGanttZoom(gantt, qltdGanttZoom);
+  if (
+    qltdGanttBaselineIsRenderable_(
+      qltdGanttPayload?.projectCode,
+      qltdGanttPayload?.data
+    )
+  ) {
+    qltdGanttBaselineEnsureLayer_(gantt);
+    const comparisonRange = qltdGanttBaselineGetRenderRange_(renderTasks);
+    if (comparisonRange) {
+      gantt.config.fit_tasks = false;
+      gantt.config.start_date = comparisonRange.start;
+      gantt.config.end_date = comparisonRange.end;
+    }
+  }
 
   gantt.templates.tooltip_text = function(start, end, task) {
+    const comparisonHtml = qltdGanttBaselineBuildTooltipHtml_(task);
     return `
       <strong>${escapeHtml(task.text || '')}</strong><br>
       WBS: ${escapeHtml(task.wbs || task.id || '')}<br>
@@ -9131,6 +10373,7 @@ async function initDhtmlxGantt(tasks, links) {
       Hoàn thành thực tế: ${escapeHtml(formatIsoDateVi(task.actualEnd || ''))}<br>
       Công việc liên kết: ${escapeHtml(task.predecessorRaw || '')}<br>
       Ghi chú cập nhật: ${escapeHtml(task.updateNote || task.note || '')}
+      ${comparisonHtml}
     `;
   };
 
