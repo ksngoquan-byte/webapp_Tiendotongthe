@@ -683,10 +683,26 @@ test('project A response cannot write into B and B resets to its activeVersion',
   assert.equal(api.state('P2').payload.baseline.version, 'BL009');
 });
 
-function createLayerHarness() {
-  const supportState = { layerSupported: null };
-  const created = [];
-  const layerContext = {
+function addScaleDate(date, step, unit) {
+  const next = new Date(date.getTime());
+  if (unit === 'day') next.setDate(next.getDate() + step);
+  else if (unit === 'week') next.setDate(next.getDate() + step * 7);
+  else if (unit === 'month') next.setMonth(next.getMonth() + step);
+  else if (unit === 'quarter') next.setMonth(next.getMonth() + step * 3);
+  else if (unit === 'year') next.setFullYear(next.getFullYear() + step);
+  else throw new Error(`Unsupported test scale ${unit}`);
+  return next;
+}
+
+function createTimelineHarness(options = {}) {
+  const supportState = {
+    projectCode: 'P1',
+    selectedVersion: 'BL005',
+    payload: { baseline: { version: 'BL005' } },
+    layerSupported: null
+  };
+  const timelineContext = {
+    Array,
     Date,
     Map,
     Math,
@@ -696,96 +712,386 @@ function createLayerHarness() {
     String,
     console: { warn() {} },
     document: {
-      createElement() {
-        const element = { className: '', style: {}, title: '' };
-        created.push(element);
-        return element;
-      },
       getElementById() {
         return null;
       }
     },
-    toIsoDateLocal: (date) => date.toISOString().slice(0, 10),
     supportState
   };
-  vm.createContext(layerContext);
+  vm.createContext(timelineContext);
   vm.runInContext(
     `
 let qltdGanttBaselineComparisonEnabled = true;
 let qltdGanttViewMode = 'progress';
-let qltdGanttBaselineLayerBinding = { gantt: null, layerId: null };
+let qltdActiveView = 'gantt';
+let qltdGanttBaselineTimelineTemplateBinding = { gantt: null, template: null };
 let qltdGanttPayload = { projectCode: 'P1' };
 function qltdGanttBaselineGetProjectState_() { return supportState; }
 ${[
-  'qltdGanttBaselineParseIsoUtc_',
-  'qltdGanttBaselineDateForGantt_',
+  'qltdGanttBaselineIsComparisonCurrent_',
+  'qltdGanttBaselineDateToOrdinal_',
+  'qltdGanttBaselineGetTimelineCellRange_',
   'qltdGanttBaselineIsTaskVisibleInTree_',
-  'qltdGanttBaselineRenderLayerTask_',
-  'qltdGanttBaselineSetLayerSupported_',
-  'qltdGanttBaselineEnsureLayer_'
+  'qltdGanttBaselineRenderTimelineCell_',
+  'qltdGanttBaselineSetVisualSupported_',
+  'qltdGanttBaselineEnsureTimelineTemplate_'
 ].map((name) => extractFunction(appSource, name)).join('\n')}
 this.api = {
-  ensure: qltdGanttBaselineEnsureLayer_,
-  render: qltdGanttBaselineRenderLayerTask_
+  ensure: qltdGanttBaselineEnsureTimelineTemplate_,
+  render: qltdGanttBaselineRenderTimelineCell_,
+  setEnabled(value) { qltdGanttBaselineComparisonEnabled = value; },
+  setViewMode(value) { qltdGanttViewMode = value; },
+  setActiveView(value) { qltdActiveView = value; },
+  setProject(value) { qltdGanttPayload = { projectCode: value }; },
+  setVersion(value) {
+    supportState.selectedVersion = value;
+    supportState.payload = { baseline: { version: value } };
+  }
 };`,
-    layerContext
+    timelineContext
   );
-  return { api: layerContext.api, supportState, created };
+  const previousTemplate = Object.prototype.hasOwnProperty.call(options, 'previousTemplate')
+    ? options.previousTemplate
+    : () => '<em>existing</em>';
+  const gantt = {
+    config: {
+      scales: [{ unit: options.unit || 'day', step: options.step || 1 }]
+    },
+    templates: {
+      timeline_cell_content: previousTemplate
+    },
+    date: {
+      add: addScaleDate
+    },
+    isTaskVisible: options.isTaskVisible || (() => true)
+  };
+  return { api: timelineContext.api, supportState, gantt };
 }
 
-test('DHTMLX baseline layer registers once across filter, zoom, reload, reset and init', () => {
-  const { api } = createLayerHarness();
-  let addCalls = 0;
-  const gantt = {
-    addTaskLayer(callback) {
-      addCalls += 1;
-      this.callback = callback;
-      return 'layer-1';
-    }
-  };
+function matchedTimelineTask(options = {}) {
+  const version = options.version || 'BL005';
+  const projectCode = options.projectCode || 'P1';
+  const current = currentTask(options.current || {});
+  const baseline = baselineTask(options.baseline || {});
+  const model = comparisonContext.api.build(
+    [current],
+    [baseline],
+    { version, projectCode }
+  );
+  return comparisonContext.api.apply([current], model)[0];
+}
+
+function cssVariable(content, name) {
+  const match = String(content).match(new RegExp(`${name}:([0-9.]+)%`));
+  return match ? Number(match[1]) : null;
+}
+
+test('Community runtime composes timeline_cell_content without addTaskLayer', () => {
+  const { api, gantt, supportState } = createTimelineHarness();
+  assert.equal(Object.hasOwn(gantt, 'addTaskLayer'), false);
+  assert.equal(api.ensure(gantt), true);
+  assert.equal(supportState.layerSupported, true);
+  const content = gantt.templates.timeline_cell_content(
+    matchedTimelineTask({ baseline: { baselineStart: '2026-01-01', baselineEnd: '2026-01-01' } }),
+    new Date(2026, 0, 1)
+  );
+  assert.match(content, /^<em>existing<\/em>/);
+  assert.match(content, /qltd-baseline-cell-segment/);
+  assert.doesNotMatch(appSource, /\.addTaskLayer\s*\(/);
+  assert.doesNotMatch(appSource, /\.removeTaskLayer\s*\(/);
+});
+
+test('timeline template preserves prior output, returns it unchanged when OFF and composes once', () => {
+  const { api, gantt } = createTimelineHarness({
+    previousTemplate: () => '<strong>prior</strong>'
+  });
   ['init', 'filter', 'zoom', 'reload', 'reset'].forEach(() => api.ensure(gantt));
-  assert.equal(addCalls, 1);
+  const task = matchedTimelineTask({
+    baseline: { baselineStart: '2026-01-01', baselineEnd: '2026-01-01' }
+  });
+  const onContent = gantt.templates.timeline_cell_content(task, new Date(2026, 0, 1));
+  assert.equal(onContent.match(/qltd-baseline-cell-segment/g)?.length, 1);
+  api.setEnabled(false);
+  assert.equal(
+    gantt.templates.timeline_cell_content(task, new Date(2026, 0, 1)),
+    '<strong>prior</strong>'
+  );
+  api.setEnabled(true);
+  api.setViewMode('budget');
+  assert.equal(
+    gantt.templates.timeline_cell_content(task, new Date(2026, 0, 1)),
+    '<strong>prior</strong>'
+  );
 });
 
-test('collapsed WBS parents suppress child baseline layers', () => {
-  const { api } = createLayerHarness();
-  const task = {
-    id: 'child',
-    parent: 'parent',
-    type: 'task',
-    _qltdBaselineComparison: {
-      version: 'BL004',
-      baseline: baselineTask()
+test('day cells render inclusive baseline once per covered day without a boundary gap', () => {
+  const { api, gantt } = createTimelineHarness({ unit: 'day' });
+  api.ensure(gantt);
+  const task = matchedTimelineTask({
+    baseline: { baselineStart: '2026-01-01', baselineEnd: '2026-01-03' }
+  });
+  const contents = [1, 2, 3, 4].map((day) => (
+    gantt.templates.timeline_cell_content(task, new Date(2026, 0, day))
+  ));
+  assert.deepEqual(contents.map((content) => /qltd-baseline-cell-segment/.test(content)), [
+    true, true, true, false
+  ]);
+  assert.equal(cssVariable(contents[0], '--qltd-baseline-left'), 0);
+  assert.equal(cssVariable(contents[0], '--qltd-baseline-width'), 100);
+  assert.match(contents[0], /is-start/);
+  assert.match(contents[2], /is-end/);
+});
+
+test('weekly cell computes partial left and width from the configured scale interval', () => {
+  const { api, gantt } = createTimelineHarness({ unit: 'week' });
+  api.ensure(gantt);
+  const task = matchedTimelineTask({
+    baseline: { baselineStart: '2026-01-03', baselineEnd: '2026-01-05' }
+  });
+  const content = gantt.templates.timeline_cell_content(task, new Date(2026, 0, 1));
+  assert.ok(Math.abs(cssVariable(content, '--qltd-baseline-left') - (2 / 7 * 100)) < 0.0001);
+  assert.ok(Math.abs(cssVariable(content, '--qltd-baseline-width') - (3 / 7 * 100)) < 0.0001);
+  assert.match(content, /is-start is-end/);
+});
+
+test('multi-cell baseline has partial ends and full middle cells at month zoom', () => {
+  const { api, gantt } = createTimelineHarness({ unit: 'month' });
+  api.ensure(gantt);
+  const task = matchedTimelineTask({
+    baseline: { baselineStart: '2026-01-16', baselineEnd: '2026-03-15' }
+  });
+  const january = gantt.templates.timeline_cell_content(task, new Date(2026, 0, 1));
+  const february = gantt.templates.timeline_cell_content(task, new Date(2026, 1, 1));
+  const march = gantt.templates.timeline_cell_content(task, new Date(2026, 2, 1));
+  assert.equal(cssVariable(january, '--qltd-baseline-left'), Number((15 / 31 * 100).toFixed(6)));
+  assert.equal(cssVariable(february, '--qltd-baseline-left'), 0);
+  assert.equal(cssVariable(february, '--qltd-baseline-width'), 100);
+  assert.equal(cssVariable(march, '--qltd-baseline-width'), Number((15 / 31 * 100).toFixed(6)));
+  assert.match(january, /is-start/);
+  assert.doesNotMatch(february, /is-start|is-end/);
+  assert.match(march, /is-end/);
+});
+
+test('quarter and year scales use their configured unit and step', () => {
+  for (const scale of [
+    { unit: 'month', step: 3, start: new Date(2026, 0, 1) },
+    { unit: 'year', step: 1, start: new Date(2026, 0, 1) }
+  ]) {
+    const { api, gantt } = createTimelineHarness(scale);
+    api.ensure(gantt);
+    const task = matchedTimelineTask({
+      baseline: { baselineStart: '2026-02-01', baselineEnd: '2026-02-28' }
+    });
+    const content = gantt.templates.timeline_cell_content(task, scale.start);
+    assert.match(content, /qltd-baseline-cell-segment/);
+    assert.ok(cssVariable(content, '--qltd-baseline-left') > 0);
+    assert.ok(cssVariable(content, '--qltd-baseline-width') > 0);
+  }
+});
+
+test('baseline milestone uses metadata and renders in exactly one boundary cell', () => {
+  const { api, gantt } = createTimelineHarness({ unit: 'month' });
+  api.ensure(gantt);
+  const task = matchedTimelineTask({
+    current: { type: 'task', rowType: 'TASK' },
+    baseline: {
+      baselineStart: '2026-02-01',
+      baselineEnd: '2026-02-01',
+      milestoneCode: 'M1'
     }
-  };
-  const gantt = {
-    isTaskVisible: () => true,
-    getTask: () => ({ id: 'parent', parent: '0', $open: false }),
-    getTaskPosition: () => ({ left: 10, top: 10, width: 80 })
-  };
-  assert.equal(api.render(gantt, task), null);
-  gantt.getTask = () => ({ id: 'parent', parent: '0', $open: true });
-  assert.equal(api.render(gantt, task).className, 'qltd-gantt-baseline-layer');
+  });
+  const january = gantt.templates.timeline_cell_content(task, new Date(2026, 0, 1));
+  const february = gantt.templates.timeline_cell_content(task, new Date(2026, 1, 1));
+  assert.doesNotMatch(january, /qltd-baseline-cell-milestone/);
+  assert.equal(february.match(/qltd-baseline-cell-milestone/g)?.length, 1);
+  assert.equal(cssVariable(february, '--qltd-baseline-left'), 0);
 });
 
-test('baseline milestone uses its own grey marker and missing addTaskLayer is controlled', () => {
-  const { api, supportState } = createLayerHarness();
-  assert.equal(api.ensure({}), false);
-  assert.equal(supportState.layerSupported, false);
-  const task = {
-    id: 'm1',
-    parent: '0',
-    type: 'milestone',
+test('invalid, current-only, ambiguous, stale version and stale project never render fragments', () => {
+  const { api, gantt } = createTimelineHarness();
+  api.ensure(gantt);
+  const invalid = matchedTimelineTask({
+    baseline: { baselineStart: '2026-02-30', baselineEnd: '2026-03-01' }
+  });
+  const currentOnly = {
+    ...currentTask(),
     _qltdBaselineComparison: {
       version: 'BL005',
-      baseline: baselineTask({ milestoneCode: 'M1' })
+      baselineMeta: { projectCode: 'P1' },
+      matchType: 'CURRENT_ONLY',
+      baseline: null,
+      baselineRenderRange: null
     }
   };
-  const marker = api.render({
-    isTaskVisible: () => true,
-    getTaskPosition: () => ({ left: 20, top: 5, width: 0 })
-  }, task);
-  assert.equal(marker.className, 'qltd-gantt-baseline-milestone');
+  const ambiguous = {
+    ...currentTask(),
+    _qltdBaselineComparison: {
+      version: 'BL005',
+      baselineMeta: { projectCode: 'P1' },
+      matchType: 'AMBIGUOUS',
+      baseline: baselineTask(),
+      baselineRenderRange: { startOrdinal: 20454, endOrdinalExclusive: 20455 }
+    }
+  };
+  for (const task of [invalid, currentOnly, ambiguous]) {
+    assert.doesNotMatch(
+      gantt.templates.timeline_cell_content(task, new Date(2026, 0, 1)),
+      /qltd-baseline-cell-/
+    );
+  }
+
+  const versionTask = matchedTimelineTask({ version: 'BL001' });
+  api.setVersion('BL004');
+  assert.doesNotMatch(
+    gantt.templates.timeline_cell_content(versionTask, new Date(2026, 0, 1)),
+    /qltd-baseline-cell-/
+  );
+
+  api.setVersion('BL005');
+  const projectTask = matchedTimelineTask({ projectCode: 'P1' });
+  api.setProject('P2');
+  assert.doesNotMatch(
+    gantt.templates.timeline_cell_content(projectTask, new Date(2026, 0, 1)),
+    /qltd-baseline-cell-/
+  );
+});
+
+test('collapsed or filtered tasks follow DHTMLX visibility without DOM traversal', () => {
+  const { api, gantt } = createTimelineHarness({ isTaskVisible: () => false });
+  api.ensure(gantt);
+  const content = gantt.templates.timeline_cell_content(
+    matchedTimelineTask(),
+    new Date(2026, 0, 1)
+  );
+  assert.equal(content, '<em>existing</em>');
+  const visibleSource = extractFunction(appSource, 'qltdGanttBaselineIsTaskVisibleInTree_');
+  assert.match(visibleSource, /isTaskVisible/);
+  assert.doesNotMatch(visibleSource, /querySelector|getTask\(|parent/);
+});
+
+test('timeline cell renderer is O(1) and does not parse, rematch, request or query DOM', () => {
+  const { api, gantt } = createTimelineHarness({ unit: 'day' });
+  api.ensure(gantt);
+  const tasks = Array.from({ length: 124 }, (_, index) => matchedTimelineTask({
+    current: { id: `R${index + 1}` },
+    baseline: {
+      refId: `R${index + 1}`,
+      baselineStart: '2026-01-01',
+      baselineEnd: '2026-06-30'
+    }
+  }));
+  let fragments = 0;
+  for (const task of tasks) {
+    for (let day = 0; day < 365; day += 1) {
+      const date = new Date(2026, 0, 1);
+      date.setDate(date.getDate() + day);
+      if (/qltd-baseline-cell-/.test(gantt.templates.timeline_cell_content(task, date))) {
+        fragments += 1;
+      }
+    }
+  }
+  assert.equal(fragments, 124 * 181);
+  const source = extractFunction(appSource, 'qltdGanttBaselineRenderTimelineCell_');
+  assert.doesNotMatch(
+    source,
+    /ParseIsoUtc|BuildComparison|BuildIndex|querySelector|querySelectorAll|fetch\(|apiRequest/
+  );
+  assert.match(source, /baselineRenderRange/);
+});
+
+test('missing timeline template surface is controlled and leaves KPI state available', () => {
+  const { api, supportState } = createTimelineHarness();
+  assert.equal(api.ensure({}), false);
+  assert.equal(supportState.layerSupported, false);
+});
+
+test('an absent timeline_cell_content template is installed without a PRO API', () => {
+  const { api, gantt } = createTimelineHarness({ previousTemplate: undefined });
+  delete gantt.templates.timeline_cell_content;
+  assert.equal(api.ensure(gantt), true);
+  assert.equal(typeof gantt.templates.timeline_cell_content, 'function');
+  assert.match(
+    gantt.templates.timeline_cell_content(
+      matchedTimelineTask({
+        baseline: { baselineStart: '2026-01-01', baselineEnd: '2026-01-01' }
+      }),
+      new Date(2026, 0, 1)
+    ),
+    /^<span class="qltd-baseline-cell-segment/
+  );
+});
+
+test('baseline dates extend the timeline with a bounded guard for corrupt extremes', () => {
+  const rangeContext = {
+    Array,
+    Date,
+    Math,
+    Number,
+    Object,
+    String,
+    toIsoDateLocal: (date) => [
+      String(date.getFullYear()).padStart(4, '0'),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0')
+    ].join('-')
+  };
+  vm.createContext(rangeContext);
+  vm.runInContext(
+    `let qltdGanttPayload = { projectCode: 'P1' };
+const rangeState = {
+  selectedVersion: 'BL005',
+  payload: { baseline: { version: 'BL005' } }
+};
+function qltdGanttBaselineGetProjectState_() { return rangeState; }
+${[
+      'qltdGanttBaselineParseIsoUtc_',
+      'qltdGanttBaselineDateForGantt_',
+      'qltdGanttBaselineIsComparisonCurrent_',
+      'qltdGanttBaselineGetRenderRange_'
+    ].map((name) => extractFunction(appSource, name)).join('\n')}
+this.getRange = qltdGanttBaselineGetRenderRange_;`,
+    rangeContext
+  );
+  const range = rangeContext.getRange([{
+    start_date: '2026-02-01',
+    end_date: '2026-02-10',
+    _qltdBaselineComparison: {
+      version: 'BL005',
+      baselineMeta: { projectCode: 'P1' },
+      baseline: {
+        baselineStart: '2026-01-01',
+        baselineEnd: '2026-03-01'
+      }
+    }
+  }]);
+  assert.equal(rangeContext.toIsoDateLocal(range.start), '2025-12-25');
+  assert.equal(rangeContext.toIsoDateLocal(range.end), '2026-03-08');
+  const staleRange = rangeContext.getRange([{
+    start_date: '2026-02-01',
+    end_date: '2026-02-10',
+    _qltdBaselineComparison: {
+      version: 'BL001',
+      baselineMeta: { projectCode: 'P1' },
+      baseline: {
+        baselineStart: '2020-01-01',
+        baselineEnd: '2020-01-10'
+      }
+    }
+  }]);
+  assert.equal(rangeContext.toIsoDateLocal(staleRange.start), '2026-01-25');
+  assert.equal(rangeContext.toIsoDateLocal(staleRange.end), '2026-02-17');
+  assert.equal(rangeContext.getRange([{
+    start_date: '2026-02-01',
+    end_date: '2026-02-10',
+    _qltdBaselineComparison: {
+      version: 'BL005',
+      baselineMeta: { projectCode: 'P1' },
+      baseline: {
+        baselineStart: '1900-01-01',
+        baselineEnd: '2100-01-01'
+      }
+    }
+  }]), null);
 });
 
 test('UI includes enriched versions, neutral historical warning, dynamic title and all KPI groups', () => {
@@ -864,12 +1170,13 @@ this.build = qltdWeb07BuildGanttDataColumns;`,
   assert.match(extractFunction(appSource, 'qltdWeb07GetGanttExportRange'), /_qltdBaselineComparison/);
 });
 
-test('PNG export keeps DHTMLX task-layer DOM by cloning the rendered container', () => {
+test('PNG export keeps timeline-cell baseline DOM by cloning the rendered container', () => {
   const frame = extractFunction(appSource, 'qltdWeb07CreateGanttCaptureFrame');
   const printRoot = extractFunction(appSource, 'qltdWeb07BuildGanttPrintRoot');
   assert.match(frame, /ctx\.container\.cloneNode\(true\)/);
   assert.match(printRoot, /ctx\.container\.cloneNode\(true\)/);
   assert.doesNotMatch(frame + printRoot, /remove.*baseline|querySelector.*baseline/i);
+  assert.match(appSource, /qltd-baseline-cell-segment/);
 });
 
 test('matching code never uses task name, WBS or row number', () => {

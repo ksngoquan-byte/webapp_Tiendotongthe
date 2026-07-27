@@ -84,7 +84,7 @@ const qltdGanttBaselineProjectStates = new Map();
 const qltdGanttBaselineVersionsCache = new Map();
 const qltdGanttBaselinePayloadCache = new Map();
 const qltdGanttBaselineRequests = new Map();
-let qltdGanttBaselineLayerBinding = { gantt: null, layerId: null };
+let qltdGanttBaselineTimelineTemplateBinding = { gantt: null, template: null };
 const QLTD_GANTT_REQUEST_TIMEOUT_MS = 40000;
 const QLTD_GANTT_BUSY_RETRY_DELAY_MS = 1500;
 const QLTD_GANTT_BUSY_MAX_DELAY_MS = 6000;
@@ -7532,6 +7532,14 @@ function qltdGanttBaselineEvaluateMatched_(currentEntry, baselineEntry, version,
   const parsedCurrentEnd = qltdGanttBaselineParseIsoUtc_(currentEnd);
   const parsedBaselineStart = qltdGanttBaselineParseIsoUtc_(baselineStart);
   const parsedBaselineEnd = qltdGanttBaselineParseIsoUtc_(baselineEnd);
+  const baselineRenderRange = parsedBaselineStart &&
+    parsedBaselineEnd &&
+    parsedBaselineEnd.ordinal >= parsedBaselineStart.ordinal
+    ? {
+        startOrdinal: parsedBaselineStart.ordinal,
+        endOrdinalExclusive: parsedBaselineEnd.ordinal + 1
+      }
+    : null;
   const base = {
     currentId: String(currentEntry.task.id || ''),
     currentTask: currentEntry.task,
@@ -7542,6 +7550,7 @@ function qltdGanttBaselineEvaluateMatched_(currentEntry, baselineEntry, version,
     currentEnd,
     baselineStart,
     baselineEnd,
+    baselineRenderRange,
     startDeltaDays: null,
     endDeltaDays: null
   };
@@ -7958,7 +7967,10 @@ function qltdGanttBaselineGetModel_(projectCode, currentTasks) {
     state.model = qltdGanttBaselineBuildComparisonModel_(
       currentTasks || [],
       state.payload.data,
-      state.payload.baseline
+      {
+        ...state.payload.baseline,
+        projectCode: code
+      }
     );
     state.modelCurrentTasks = currentTasks;
   }
@@ -8859,27 +8871,46 @@ function qltdWeb07EnsureGanttPolishStyles() {
       margin-right: 8px;
     }
 
-    #web07GanttContainer .qltd-gantt-baseline-layer {
+    #web07GanttContainer .qltd-baseline-cell-segment {
       position: absolute;
-      height: 7px;
-      border: 2px dashed #475569;
-      border-radius: 3px;
+      top: 25px;
+      left: var(--qltd-baseline-left, 0%);
+      width: var(--qltd-baseline-width, 100%);
+      height: 5px;
+      border-top: 1px dashed #475569;
+      border-bottom: 1px dashed #475569;
       background: rgba(148, 163, 184, .78);
       box-sizing: border-box;
       pointer-events: none;
-      z-index: 4;
+      z-index: 1;
     }
 
-    #web07GanttContainer .qltd-gantt-baseline-milestone {
+    #web07GanttContainer .qltd-baseline-cell-segment.is-start {
+      border-left: 1px dashed #475569;
+      border-radius: 3px 0 0 3px;
+    }
+
+    #web07GanttContainer .qltd-baseline-cell-segment.is-end {
+      border-right: 1px dashed #475569;
+      border-radius: 0 3px 3px 0;
+    }
+
+    #web07GanttContainer .qltd-baseline-cell-segment.is-start.is-end {
+      border-radius: 3px;
+    }
+
+    #web07GanttContainer .qltd-baseline-cell-milestone {
       position: absolute;
-      width: 10px;
-      height: 10px;
-      border: 2px solid #475569;
+      top: 23px;
+      left: var(--qltd-baseline-left, 0%);
+      width: 8px;
+      height: 8px;
+      border: 1px solid #475569;
       background: #94a3b8;
-      transform: rotate(45deg);
+      transform: translateX(-50%) rotate(45deg);
       box-sizing: border-box;
       pointer-events: none;
-      z-index: 4;
+      z-index: 1;
     }
 
     .qltd-baseline-result {
@@ -10036,17 +10067,36 @@ function qltdGanttBaselineBuildTooltipHtml_(task) {
   `;
 }
 
+function qltdGanttBaselineIsComparisonCurrent_(comparison) {
+  const projectCode = String(qltdGanttPayload?.projectCode || '').trim();
+  const state = qltdGanttBaselineGetProjectState_(projectCode);
+  const selectedVersion = String(state?.selectedVersion || '').trim().toUpperCase();
+  return !!(
+    comparison &&
+    projectCode &&
+    selectedVersion &&
+    String(comparison.version || '').trim().toUpperCase() === selectedVersion &&
+    String(comparison.baselineMeta?.projectCode || '').trim() === projectCode &&
+    String(state?.payload?.baseline?.version || '').trim().toUpperCase() === selectedVersion
+  );
+}
+
 function qltdGanttBaselineGetRenderRange_(tasks) {
   let minOrdinal = null;
   let maxOrdinal = null;
   (tasks || []).forEach((task) => {
     const comparison = task?._qltdBaselineComparison;
-    [
+    const values = [
       task?.start_date,
-      task?.end_date,
-      comparison?.baseline?.baselineStart,
-      comparison?.baseline?.baselineEnd
-    ].forEach((value) => {
+      task?.end_date
+    ];
+    if (qltdGanttBaselineIsComparisonCurrent_(comparison)) {
+      values.push(
+        comparison?.baseline?.baselineStart,
+        comparison?.baseline?.baselineEnd
+      );
+    }
+    values.forEach((value) => {
       const parsed = qltdGanttBaselineParseIsoUtc_(
         value instanceof Date ? toIsoDateLocal(value) : value
       );
@@ -10056,6 +10106,7 @@ function qltdGanttBaselineGetRenderRange_(tasks) {
     });
   });
   if (minOrdinal === null || maxOrdinal === null) return null;
+  if (maxOrdinal - minOrdinal > 366 * 50) return null;
   return {
     start: qltdGanttBaselineDateForGantt_(
       new Date((minOrdinal - 7) * 86400000).toISOString().slice(0, 10)
@@ -10068,56 +10119,109 @@ function qltdGanttBaselineGetRenderRange_(tasks) {
 
 function qltdGanttBaselineIsTaskVisibleInTree_(gantt, task) {
   if (!gantt || !task) return false;
-  if (
-    typeof gantt.isTaskVisible === 'function' &&
-    !gantt.isTaskVisible(task.id)
-  ) {
-    return false;
-  }
-  const visited = new Set();
-  let parentId = String(task.parent || '0');
-  while (parentId && parentId !== '0' && !visited.has(parentId)) {
-    visited.add(parentId);
-    if (typeof gantt.getTask !== 'function') return false;
-    const parent = gantt.getTask(parentId);
-    if (!parent) return false;
-    if (parent.$open === false || parent.open === false) return false;
-    parentId = String(parent.parent || '0');
-  }
-  return true;
+  return typeof gantt.isTaskVisible === 'function' &&
+    gantt.isTaskVisible(task.id);
 }
 
-function qltdGanttBaselineRenderLayerTask_(gantt, task) {
-  const comparison = task?._qltdBaselineComparison;
-  const baseline = comparison?.baseline;
+function qltdGanttBaselineDateToOrdinal_(value) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return null;
+  return Math.floor(Date.UTC(
+    value.getFullYear(),
+    value.getMonth(),
+    value.getDate()
+  ) / 86400000);
+}
+
+function qltdGanttBaselineGetTimelineCellRange_(gantt, cellStart) {
+  const scales = Array.isArray(gantt?.config?.scales) ? gantt.config.scales : [];
+  const scale = scales[scales.length - 1];
+  const step = Number(scale?.step || 1);
+  const unit = String(scale?.unit || '').trim();
   if (
-    !qltdGanttBaselineComparisonEnabled ||
-    qltdGanttViewMode !== 'progress' ||
-    !baseline ||
-    !qltdGanttBaselineIsTaskVisibleInTree_(gantt, task)
+    !(cellStart instanceof Date) ||
+    Number.isNaN(cellStart.getTime()) ||
+    !scale ||
+    !unit ||
+    !Number.isFinite(step) ||
+    step <= 0 ||
+    typeof gantt?.date?.add !== 'function'
   ) {
     return null;
   }
-  const start = qltdGanttBaselineDateForGantt_(baseline.baselineStart);
-  const end = qltdGanttBaselineDateForGantt_(baseline.baselineEnd);
-  if (!start || !end || typeof gantt.getTaskPosition !== 'function') return null;
-  const position = gantt.getTaskPosition(task, start, end);
-  if (!position) return null;
-  const isMilestone = !!baseline.milestoneCode || task.type === 'milestone';
-  const element = document.createElement('div');
-  element.className = isMilestone
-    ? 'qltd-gantt-baseline-milestone'
-    : 'qltd-gantt-baseline-layer';
-  element.style.left = `${Math.round(position.left - (isMilestone ? 5 : 0))}px`;
-  element.style.top = `${Math.round(position.top + (isMilestone ? 16 : 17))}px`;
-  if (!isMilestone) {
-    element.style.width = `${Math.max(3, Math.round(position.width || 0))}px`;
+  let cellEnd;
+  try {
+    cellEnd = gantt.date.add(new Date(cellStart.getTime()), step, unit);
+  } catch (error) {
+    return null;
   }
-  element.title = `Baseline ${comparison.version}: ${baseline.baselineStart} – ${baseline.baselineEnd}`;
-  return element;
+  const startOrdinal = qltdGanttBaselineDateToOrdinal_(cellStart);
+  const endOrdinal = qltdGanttBaselineDateToOrdinal_(cellEnd);
+  if (
+    startOrdinal === null ||
+    endOrdinal === null ||
+    endOrdinal <= startOrdinal
+  ) {
+    return null;
+  }
+  return {
+    startOrdinal,
+    endOrdinal,
+    spanDays: endOrdinal - startOrdinal
+  };
 }
 
-function qltdGanttBaselineSetLayerSupported_(supported) {
+function qltdGanttBaselineRenderTimelineCell_(gantt, task, cellStart) {
+  const comparison = task?._qltdBaselineComparison;
+  const baseline = comparison?.baseline;
+  if (
+    qltdActiveView !== 'gantt' ||
+    !qltdGanttBaselineComparisonEnabled ||
+    qltdGanttViewMode !== 'progress' ||
+    !baseline ||
+    !['MATCHED_BY_TASK_CODE', 'MATCHED_BY_REF_ID'].includes(comparison?.matchType) ||
+    !qltdGanttBaselineIsComparisonCurrent_(comparison) ||
+    !qltdGanttBaselineIsTaskVisibleInTree_(gantt, task)
+  ) {
+    return '';
+  }
+
+  const range = comparison.baselineRenderRange;
+  const cell = qltdGanttBaselineGetTimelineCellRange_(gantt, cellStart);
+  if (!range || !cell) return '';
+
+  if (baseline.milestoneCode) {
+    if (
+      range.startOrdinal < cell.startOrdinal ||
+      range.startOrdinal >= cell.endOrdinal
+    ) {
+      return '';
+    }
+    const leftPercent = Math.max(
+      0,
+      Math.min(100, ((range.startOrdinal - cell.startOrdinal) / cell.spanDays) * 100)
+    );
+    return `<span class="qltd-baseline-cell-milestone" style="--qltd-baseline-left:${leftPercent.toFixed(6)}%;" aria-hidden="true"></span>`;
+  }
+
+  const overlapStart = Math.max(range.startOrdinal, cell.startOrdinal);
+  const overlapEnd = Math.min(range.endOrdinalExclusive, cell.endOrdinal);
+  if (overlapEnd <= overlapStart) return '';
+  const leftPercent = Math.max(
+    0,
+    Math.min(100, ((overlapStart - cell.startOrdinal) / cell.spanDays) * 100)
+  );
+  const widthPercent = Math.max(
+    0,
+    Math.min(100 - leftPercent, ((overlapEnd - overlapStart) / cell.spanDays) * 100)
+  );
+  if (widthPercent <= 0) return '';
+  const classes = ['qltd-baseline-cell-segment'];
+  if (overlapStart === range.startOrdinal) classes.push('is-start');
+  if (overlapEnd === range.endOrdinalExclusive) classes.push('is-end');
+  return `<span class="${classes.join(' ')}" style="--qltd-baseline-left:${leftPercent.toFixed(6)}%;--qltd-baseline-width:${widthPercent.toFixed(6)}%;" aria-hidden="true"></span>`;
+}
+
+function qltdGanttBaselineSetVisualSupported_(supported) {
   const projectCode = String(qltdGanttPayload?.projectCode || '').trim();
   const state = qltdGanttBaselineGetProjectState_(projectCode);
   if (state) state.layerSupported = supported;
@@ -10125,40 +10229,35 @@ function qltdGanttBaselineSetLayerSupported_(supported) {
   if (notice) notice.classList.toggle('hidden', supported !== false);
 }
 
-function qltdGanttBaselineEnsureLayer_(gantt) {
-  if (!gantt || typeof gantt.addTaskLayer !== 'function') {
-    qltdGanttBaselineSetLayerSupported_(false);
+function qltdGanttBaselineEnsureTimelineTemplate_(gantt) {
+  if (!gantt || !gantt.templates) {
+    qltdGanttBaselineSetVisualSupported_(false);
     return false;
   }
   if (
-    qltdGanttBaselineLayerBinding.gantt === gantt &&
-    qltdGanttBaselineLayerBinding.layerId !== null
+    qltdGanttBaselineTimelineTemplateBinding.gantt === gantt &&
+    qltdGanttBaselineTimelineTemplateBinding.template ===
+      gantt.templates.timeline_cell_content
   ) {
-    qltdGanttBaselineSetLayerSupported_(true);
+    qltdGanttBaselineSetVisualSupported_(true);
     return true;
   }
-  const previous = qltdGanttBaselineLayerBinding;
-  if (
-    previous.gantt &&
-    previous.gantt !== gantt &&
-    previous.layerId !== null &&
-    previous.layerId !== true &&
-    typeof previous.gantt.removeTaskLayer === 'function'
-  ) {
-    try {
-      previous.gantt.removeTaskLayer(previous.layerId);
-    } catch (error) {
-      console.warn('Cannot remove previous baseline task layer', error);
-    }
-  }
-  const layerId = gantt.addTaskLayer((task) => (
-    qltdGanttBaselineRenderLayerTask_(gantt, task)
-  ));
-  qltdGanttBaselineLayerBinding = {
-    gantt,
-    layerId: layerId === undefined ? true : layerId
+  const previousTemplate = gantt.templates.timeline_cell_content;
+  const composedTemplate = function(task, date) {
+    const previousContent = typeof previousTemplate === 'function'
+      ? previousTemplate.apply(this, arguments)
+      : previousTemplate;
+    const preservedContent = previousContent === null || previousContent === undefined
+      ? ''
+      : String(previousContent);
+    return preservedContent + qltdGanttBaselineRenderTimelineCell_(gantt, task, date);
   };
-  qltdGanttBaselineSetLayerSupported_(true);
+  gantt.templates.timeline_cell_content = composedTemplate;
+  qltdGanttBaselineTimelineTemplateBinding = {
+    gantt,
+    template: composedTemplate
+  };
+  qltdGanttBaselineSetVisualSupported_(true);
   return true;
 }
 
@@ -10346,7 +10445,6 @@ async function initDhtmlxGantt(tasks, links) {
       qltdGanttPayload?.data
     )
   ) {
-    qltdGanttBaselineEnsureLayer_(gantt);
     const comparisonRange = qltdGanttBaselineGetRenderRange_(renderTasks);
     if (comparisonRange) {
       gantt.config.fit_tasks = false;
@@ -10380,6 +10478,8 @@ async function initDhtmlxGantt(tasks, links) {
   gantt.templates.task_text = function() {
     return '';
   };
+
+  qltdGanttBaselineEnsureTimelineTemplate_(gantt);
 
   gantt.templates.task_class = function(start, end, task) {
     const classes = [];
