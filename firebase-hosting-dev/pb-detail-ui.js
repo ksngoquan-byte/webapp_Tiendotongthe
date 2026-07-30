@@ -1042,6 +1042,8 @@ function qltdPbDetailHandleDeptPlanRendered(event) {
 }
 
 function qltdPbDetailBoot() {
+  if (window.__qltdPbDetailUiLoaded) return;
+  window.__qltdPbDetailUiLoaded = true;
   qltdPbDetailEnsureStyles();
   document.addEventListener('qltd:dept-plan-rendered', qltdPbDetailHandleDeptPlanRendered);
   console.info(`[QLTD] PB_DETAIL UI loaded: ${QLTD_PB_DETAIL_UI_VERSION}`);

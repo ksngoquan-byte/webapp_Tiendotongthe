@@ -67,6 +67,7 @@ let authEmail = 'reporter@example.com';
 let nowCounter = 0;
 let uuidCounter = 0;
 const logs = [];
+const notificationCache = new Map();
 let users = [
   { email: 'reporter@example.com', role: 'REPORTER', status: 'ACTIVE', deptCode: 'PTDA' },
   { email: 'editor1@example.com', role: 'EDITOR', status: 'ACTIVE', deptCode: 'PTDA' },
@@ -104,6 +105,13 @@ const context = {
   qltdBudgetSafeErrorMessage_: (error) => String(error?.message || error),
   QLTD_WORK_WRITE_LOCK_TIMEOUT_MS: 1000,
   LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
+  CacheService: {
+    getScriptCache: () => ({
+      get: (key) => notificationCache.get(key) || null,
+      put: (key, value) => notificationCache.set(key, value),
+      remove: (key) => notificationCache.delete(key)
+    })
+  },
   Utilities: { getUuid: () => `UUID-${++uuidCounter}` },
   Logger: { log: (message) => logs.push(String(message)) },
   isFinite,
@@ -117,6 +125,7 @@ vm.runInContext(`${source}\nthis.api = {
   pending: qltdNotificationsTryCreatePendingNoLock_,
   finalize: qltdNotificationsTryFinalizeReviewNoLock_,
   list: qltdNotificationsList_,
+  summary: qltdNotificationsSummary_,
   markRead: qltdNotificationsMarkRead_,
   read: qltdNotificationsRead_
 };`, context);
@@ -178,6 +187,10 @@ authEmail = 'editor1@example.com';
 const openPendingList = api.list({ limit: 100 });
 assert.equal(openPendingList.unreadCount, 1);
 assert.equal(openPendingList.actionRequiredCount, 1);
+const openPendingSummary = api.summary({});
+assert.equal(openPendingSummary.unreadCount, 1);
+assert.equal(openPendingSummary.actionRequiredCount, 1);
+assert.equal(openPendingSummary.notifications, undefined);
 
 const masterUpdate = {
   updateId: 'WTU-MASTER-1', projectCode: 'P1', deptCode: 'PTDA', weekCode: 'WEEK-2026-06-22',
@@ -225,6 +238,8 @@ const marked = api.markRead({ notificationId: editorNotice.notificationId });
 assert.equal(marked.success, true);
 assert.equal(marked.updated, true);
 assert.equal(marked.notification.isRead, true);
+const markedSummary = api.summary({});
+assert.equal(markedSummary.unreadCount, 0, 'mark-read must invalidate the user summary cache');
 const markedAgain = api.markRead({ notificationId: editorNotice.notificationId });
 assert.equal(markedAgain.success, true);
 assert.equal(markedAgain.updated, false);
@@ -233,8 +248,11 @@ assert.equal(api.markRead({ notificationId: editorNotice.notificationId }).code,
 for (const email of ['reporter@example.com', 'editor1@example.com', 'admin@example.com', 'pmo@example.com', 'viewer@example.com']) {
   authEmail = email;
   const ownList = api.list({ limit: 100 });
+  const ownSummary = api.summary({});
   assert.equal(ownList.success, true);
   assert.ok(ownList.notifications.every((notification) => notification.recipientEmail === email));
+  assert.equal(ownSummary.totalCount, ownList.totalCount);
+  assert.equal(ownSummary.unreadCount, ownList.unreadCount);
 }
 
 spreadsheet = createSpreadsheet();

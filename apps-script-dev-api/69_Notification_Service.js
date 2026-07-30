@@ -19,6 +19,7 @@ const QLTD_NOTIFICATIONS_ENTITY_TYPE = 'WEEKLY_TASK_UPDATE';
 const QLTD_NOTIFICATIONS_DEFAULT_LIMIT = 50;
 const QLTD_NOTIFICATIONS_MAX_LIMIT = 100;
 const QLTD_NOTIFICATIONS_REJECTION_REASON_MAX = 300;
+const QLTD_NOTIFICATIONS_SUMMARY_CACHE_TTL_SECONDS = 30;
 
 function setupNotificationsSheetDev() {
   return qltdSetupNotificationsSheet_();
@@ -109,37 +110,144 @@ function qltdNotificationsList_(params) {
   if (read.error) {
     return qltdWorkError_(QLTD_NOTIFICATIONS_SOURCE, action, read.error.code, read.error.message, { email: auth.email });
   }
-  const owned = read.notifications.filter(function(notification) {
-    return notification.recipientEmail === auth.email;
-  }).sort(function(left, right) {
-    return String(right.createdAt || '').localeCompare(String(left.createdAt || '')) || right.rowNumber - left.rowNumber;
-  });
-  const unreadCount = owned.filter(function(notification) { return !notification.isRead; }).length;
-  const actionRequiredCount = owned.filter(function(notification) {
-    return notification.status === QLTD_NOTIFICATIONS_STATUS.OPEN &&
-      [QLTD_NOTIFICATIONS_TYPES.PB_DETAIL_PENDING, QLTD_NOTIFICATIONS_TYPES.MASTER_COMPLETION_PENDING].indexOf(notification.type) !== -1;
-  }).length;
   const requestedLimit = Number(params && params.limit);
   const limit = isFinite(requestedLimit) && requestedLimit > 0
     ? Math.min(Math.floor(requestedLimit), QLTD_NOTIFICATIONS_MAX_LIMIT)
     : QLTD_NOTIFICATIONS_DEFAULT_LIMIT;
+  const collected = qltdNotificationsCollectForUser_(read.notifications, auth.email, limit);
   const result = qltdWorkOk_(QLTD_NOTIFICATIONS_SOURCE, action, {
-    notifications: owned.slice(0, limit),
-    unreadCount: unreadCount,
-    actionRequiredCount: actionRequiredCount,
-    totalCount: owned.length,
+    notifications: collected.notifications,
+    unreadCount: collected.unreadCount,
+    actionRequiredCount: collected.actionRequiredCount,
+    totalCount: collected.totalCount,
     limit: limit
   }, [], { email: auth.email });
   result.performance = {
     rowsRead: read.rawRows.length,
     columnsRead: QLTD_NOTIFICATIONS_HEADERS.length,
     cellsRead: read.rawRows.length * QLTD_NOTIFICATIONS_HEADERS.length,
-    recordCount: owned.length,
+    recordCount: collected.totalCount,
     sheetCount: 1,
     sourceCount: 1,
     cacheHit: false
   };
   return result;
+}
+
+function qltdNotificationsSummary_(params) {
+  const action = 'notifications_summary';
+  const auth = qltdWorkAuthUser_(params && params.email, action, QLTD_NOTIFICATIONS_SOURCE);
+  if (auth.error) return auth.error;
+  const role = auth.user && auth.user.role || '';
+  const cached = qltdNotificationsSummaryCacheGet_(auth.email, role);
+  if (cached) {
+    const cachedResult = qltdWorkOk_(QLTD_NOTIFICATIONS_SOURCE, action, cached, [], { email: auth.email });
+    cachedResult.performance = {
+      rowsRead: 0,
+      columnsRead: 0,
+      cellsRead: 0,
+      recordCount: Number(cached.totalCount || 0),
+      sheetCount: 0,
+      sourceCount: 0,
+      cacheHit: true
+    };
+    return cachedResult;
+  }
+  const read = qltdNotificationsRead_();
+  if (read.error) {
+    return qltdWorkError_(QLTD_NOTIFICATIONS_SOURCE, action, read.error.code, read.error.message, { email: auth.email });
+  }
+  const collected = qltdNotificationsCollectForUser_(read.notifications, auth.email, 0);
+  const summary = {
+    unreadCount: collected.unreadCount,
+    actionRequiredCount: collected.actionRequiredCount,
+    totalCount: collected.totalCount
+  };
+  qltdNotificationsSummaryCachePut_(auth.email, role, summary);
+  const result = qltdWorkOk_(QLTD_NOTIFICATIONS_SOURCE, action, summary, [], { email: auth.email });
+  result.performance = {
+    rowsRead: read.rawRows.length,
+    columnsRead: QLTD_NOTIFICATIONS_HEADERS.length,
+    cellsRead: read.rawRows.length * QLTD_NOTIFICATIONS_HEADERS.length,
+    recordCount: collected.totalCount,
+    sheetCount: 1,
+    sourceCount: 1,
+    cacheHit: false
+  };
+  return result;
+}
+
+function qltdNotificationsCollectForUser_(notifications, email, limit) {
+  const normalizedEmail = qltdWorkNormalizeEmail_(email);
+  const boundedLimit = Math.max(0, Math.min(Number(limit || 0), QLTD_NOTIFICATIONS_MAX_LIMIT));
+  const selected = [];
+  let unreadCount = 0;
+  let actionRequiredCount = 0;
+  let totalCount = 0;
+  (notifications || []).forEach(function(notification) {
+    if (notification.recipientEmail !== normalizedEmail) return;
+    totalCount += 1;
+    if (!notification.isRead) unreadCount += 1;
+    if (notification.status === QLTD_NOTIFICATIONS_STATUS.OPEN &&
+      [QLTD_NOTIFICATIONS_TYPES.PB_DETAIL_PENDING, QLTD_NOTIFICATIONS_TYPES.MASTER_COMPLETION_PENDING].indexOf(notification.type) !== -1) {
+      actionRequiredCount += 1;
+    }
+    if (!boundedLimit) return;
+    selected.push(notification);
+    selected.sort(qltdNotificationsNewestFirst_);
+    if (selected.length > boundedLimit) selected.pop();
+  });
+  return {
+    notifications: selected,
+    unreadCount: unreadCount,
+    actionRequiredCount: actionRequiredCount,
+    totalCount: totalCount
+  };
+}
+
+function qltdNotificationsNewestFirst_(left, right) {
+  return String(right.createdAt || '').localeCompare(String(left.createdAt || '')) ||
+    Number(right.rowNumber || 0) - Number(left.rowNumber || 0);
+}
+
+function qltdNotificationsSummaryCacheKey_(email, role) {
+  return 'QLTD_NTF_SUMMARY_V1_' +
+    qltdWorkNormalizeEmail_(email).replace(/[^a-z0-9]/g, '_').slice(0, 80) + '_' +
+    qltdWorkNormalizeRole_(role).replace(/[^A-Z0-9_]/g, '_').slice(0, 20);
+}
+
+function qltdNotificationsSummaryCacheGet_(email, role) {
+  try {
+    if (typeof CacheService === 'undefined') return null;
+    const text = CacheService.getScriptCache().get(qltdNotificationsSummaryCacheKey_(email, role));
+    return text ? JSON.parse(text) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function qltdNotificationsSummaryCachePut_(email, role, summary) {
+  try {
+    if (typeof CacheService === 'undefined') return false;
+    CacheService.getScriptCache().put(
+      qltdNotificationsSummaryCacheKey_(email, role),
+      JSON.stringify(summary),
+      QLTD_NOTIFICATIONS_SUMMARY_CACHE_TTL_SECONDS
+    );
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function qltdNotificationsSummaryCacheInvalidate_(email, role) {
+  try {
+    if (typeof CacheService === 'undefined') return false;
+    CacheService.getScriptCache().remove(qltdNotificationsSummaryCacheKey_(email, role));
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 function qltdNotificationsMarkRead_(payload) {
@@ -177,6 +285,7 @@ function qltdNotificationsMarkRead_(payload) {
     }
     const readAt = qltdWorkNowIso_();
     read.sheet.getRange(target.rowNumber, 14, 1, 2).setValues([[true, readAt]]);
+    qltdNotificationsSummaryCacheInvalidate_(auth.email, auth.user && auth.user.role || target.recipientRole);
     return qltdWorkOk_(QLTD_NOTIFICATIONS_SOURCE, action, {
       notification: Object.assign({}, target, { isRead: true, readAt: readAt }),
       updated: true,
@@ -299,6 +408,9 @@ function qltdNotificationsCreateNoLock_(type, update, recipients, options) {
   if (rows.length) {
     const startRow = Math.max(read.sheet.getLastRow() + 1, 2);
     read.sheet.getRange(startRow, 1, rows.length, QLTD_NOTIFICATIONS_HEADERS.length).setValues(rows);
+    (recipients || []).forEach(function(user) {
+      qltdNotificationsSummaryCacheInvalidate_(user && user.email, user && user.role);
+    });
   }
   return {
     createdCount: rows.length,
@@ -314,17 +426,22 @@ function qltdNotificationsResolveNoLock_(update) {
   if (read.error) throw new Error(read.error.code + ': ' + read.error.message);
   const now = qltdWorkNowIso_();
   const rowNumbers = [];
+  const affectedRecipients = {};
   read.notifications.forEach(function(notification) {
     const pendingType = notification.type === QLTD_NOTIFICATIONS_TYPES.PB_DETAIL_PENDING ||
       notification.type === QLTD_NOTIFICATIONS_TYPES.MASTER_COMPLETION_PENDING;
     if (notification.sourceRequestId !== update.updateId || !pendingType || notification.status !== QLTD_NOTIFICATIONS_STATUS.OPEN) return;
     rowNumbers.push(notification.rowNumber);
+    affectedRecipients[notification.recipientEmail] = notification.recipientRole;
   });
   if (rowNumbers.length) {
     read.sheet.getRangeList(rowNumbers.map(function(rowNumber) { return 'P' + rowNumber; }))
       .setValue(QLTD_NOTIFICATIONS_STATUS.RESOLVED);
     read.sheet.getRangeList(rowNumbers.map(function(rowNumber) { return 'R' + rowNumber; }))
       .setValue(now);
+    Object.keys(affectedRecipients).forEach(function(email) {
+      qltdNotificationsSummaryCacheInvalidate_(email, affectedRecipients[email]);
+    });
   }
   return { resolvedCount: rowNumbers.length, warnings: [] };
 }
@@ -334,9 +451,14 @@ function qltdNotificationsRead_() {
   if (!sheet) return { error: { code: 'NOTIFICATIONS_NOT_READY', message: 'NOTIFICATIONS sheet has not been set up.' } };
   const inspection = qltdNotificationsInspectSheet_(sheet);
   if (!inspection.headerMatches) return { error: { code: 'NOTIFICATIONS_HEADER_MISMATCH', message: 'NOTIFICATIONS headers do not match.' } };
-  const rawRows = sheet.getLastRow() > 1
-    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, QLTD_NOTIFICATIONS_HEADERS.length).getValues()
+  const lastRow = sheet.getLastRow();
+  const rawRows = lastRow > 1
+    ? sheet.getRange(2, 1, lastRow - 1, QLTD_NOTIFICATIONS_HEADERS.length).getValues()
     : [];
+  if (typeof qltdPerfIncrement_ === 'function' && rawRows.length) {
+    qltdPerfIncrement_('sheetRangeReads');
+    qltdPerfIncrement_('notificationRowsRead', rawRows.length);
+  }
   const notifications = rawRows.map(function(row, index) {
     const object = {};
     QLTD_NOTIFICATIONS_HEADERS.forEach(function(header, column) { object[header] = row[column]; });

@@ -80,7 +80,10 @@ function createFrontendSaveContext(postResult, options = {}) {
     qltdDepartmentDashboardCache: { delete: () => { calls.dashboardDelete += 1; } },
     qltdGanttDirtyProjects: { add: () => {} },
     qltdGanttForceRefreshProjects: { add: () => {} },
+    qltdInvalidateDashboardCacheForProject: () => {},
+    qltdActiveView: 'admin',
     loadGanttDataForSelectedProject: async () => { calls.gantt += 1; },
+    loadDashboardSummaryForSelectedProject: async () => {},
     loadWeeklyTaskDataForCurrent: async () => { calls.weekly += 1; }
   };
   vm.createContext(context);
@@ -102,7 +105,7 @@ await frontend.context.save();
 assert.equal(frontend.calls.close, 1);
 assert.equal(frontend.calls.toast, 1);
 assert.equal(frontend.calls.dashboardDelete, 1);
-assert.equal(frontend.calls.gantt, 1);
+assert.equal(frontend.calls.gantt, 0, 'saving in Admin must not load a hidden Gantt');
 assert.equal(frontend.calls.weekly, 1);
 assert.equal(frontend.calls.confirm, 0, 'Task-name-only edits must not request a schedule confirmation.');
 assert.equal(frontend.calls.body.confirmRecalculateLinked, undefined);

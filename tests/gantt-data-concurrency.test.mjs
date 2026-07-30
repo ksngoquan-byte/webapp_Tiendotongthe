@@ -132,7 +132,7 @@ test('sheet read stops at the last task row instead of reading the whole sheet',
   const calls = [];
   const sheet = {
     getName: () => 'Cong_viec',
-    getMaxRows: () => 1000,
+    getMaxRows: () => { throw new Error('getMaxRows must not be used'); },
     getMaxColumns: () => 20,
     getLastColumn: () => 4,
     getLastRow: () => 5,
@@ -157,8 +157,172 @@ test('sheet read stops at the last task row instead of reading the whole sheet',
   const result = vm.runInContext('qltdGanttReadSourceValues_(__sheet, __warnings)', context);
   assert.equal(result.rowsRead, 5);
   assert.equal(result.columnsRead, 4);
-  assert.ok(calls.some((call) => call.row === 1 && call.rowCount === 5));
-  assert.ok(calls.every((call) => call.rowCount <= 999));
+  assert.deepEqual(calls, [{ row: 1, column: 1, rowCount: 5, columnCount: 4 }]);
+});
+
+test('cache keys isolate user, role, project and context', () => {
+  const context = createContext();
+  const editorP1 = vm.runInContext(
+    `qltdGanttCacheBaseKey_('P1', { email: 'user@example.com', role: 'EDITOR', deptCode: 'D1', context: 'PROJECT_DATA' })`,
+    context
+  );
+  const viewerP1 = vm.runInContext(
+    `qltdGanttCacheBaseKey_('P1', { email: 'user@example.com', role: 'VIEWER', deptCode: 'D1', context: 'PROJECT_DATA' })`,
+    context
+  );
+  const editorP2 = vm.runInContext(
+    `qltdGanttCacheBaseKey_('P2', { email: 'user@example.com', role: 'EDITOR', deptCode: 'D1', context: 'PROJECT_DATA' })`,
+    context
+  );
+  const otherUser = vm.runInContext(
+    `qltdGanttCacheBaseKey_('P1', { email: 'other@example.com', role: 'EDITOR', deptCode: 'D1', context: 'PROJECT_DATA' })`,
+    context
+  );
+  assert.notEqual(editorP1, viewerP1);
+  assert.notEqual(editorP1, editorP2);
+  assert.notEqual(editorP1, otherUser);
+});
+
+test('scoped invalidation preserves registry entries for other access contexts', () => {
+  const context = createContext();
+  const values = new Map();
+  context.CacheService = {
+    getScriptCache: () => ({
+      get: (key) => values.get(key) || null,
+      put: (key, value) => values.set(key, value),
+      remove: (key) => values.delete(key),
+      removeAll: (keys) => keys.forEach((key) => values.delete(key))
+    })
+  };
+  const editorContext = {
+    email: 'user@example.com', role: 'EDITOR', deptCode: 'D1', context: 'PROJECT_DATA'
+  };
+  const viewerContext = {
+    email: 'viewer@example.com', role: 'VIEWER', deptCode: 'D1', context: 'PROJECT_DATA'
+  };
+  context.__editorContext = editorContext;
+  context.__viewerContext = viewerContext;
+  const editorBase = vm.runInContext("qltdGanttCacheBaseKey_('P1', __editorContext)", context);
+  const viewerBase = vm.runInContext("qltdGanttCacheBaseKey_('P1', __viewerContext)", context);
+  const registryKey = vm.runInContext("qltdGanttCacheRegistryKey_('P1')", context);
+  values.set(registryKey, JSON.stringify([editorBase, viewerBase]));
+  values.set(`${editorBase}_M`, JSON.stringify({ chunkCount: 1 }));
+  values.set(`${editorBase}_C0`, 'editor');
+  values.set(`${viewerBase}_M`, JSON.stringify({ chunkCount: 1 }));
+  values.set(`${viewerBase}_C0`, 'viewer');
+
+  const result = vm.runInContext("qltdGanttInvalidateCache_('P1', __editorContext)", context);
+
+  assert.equal(result.success, true);
+  assert.equal(values.has(`${editorBase}_M`), false);
+  assert.equal(values.has(`${editorBase}_C0`), false);
+  assert.equal(values.has(`${viewerBase}_M`), true);
+  assert.equal(values.has(`${viewerBase}_C0`), true);
+  assert.deepEqual(JSON.parse(values.get(registryKey)), [viewerBase]);
+});
+
+test('dashboard projection cache is isolated from Gantt and uses a 60 second payload TTL', () => {
+  const context = createContext();
+  const writes = [];
+  const values = new Map();
+  context.CacheService = {
+    getScriptCache: () => ({
+      get: (key) => values.get(key) || null,
+      putAll: (entries, ttl) => {
+        writes.push({ type: 'chunks', ttl });
+        Object.entries(entries).forEach(([key, value]) => values.set(key, value));
+      },
+      put: (key, value, ttl) => {
+        writes.push({ type: key.endsWith('_M') ? 'manifest' : 'registry', ttl });
+        values.set(key, value);
+      }
+    })
+  };
+  context.__accessContext = {
+    email: 'user@example.com', role: 'EDITOR', deptCode: 'D1', context: 'PROJECT_DATA'
+  };
+  context.__payload = { success: true, projectCode: 'P1', data: [{ id: 'T1' }] };
+  const ganttBase = vm.runInContext("qltdGanttCacheBaseKey_('P1', __accessContext)", context);
+  const dashboardBase = vm.runInContext(
+    "qltdGanttCacheBaseKey_('P1', qltdDashboardCacheAccessContext_(__accessContext))",
+    context
+  );
+  const result = vm.runInContext(
+    "qltdGanttCachePut_('P1', __payload, qltdDashboardCacheAccessContext_(__accessContext), QLTD_DASHBOARD_CACHE_TTL_SECONDS)",
+    context
+  );
+
+  assert.equal(result.stored, true);
+  assert.notEqual(ganttBase, dashboardBase);
+  assert.deepEqual(writes.filter((write) => write.type !== 'registry').map((write) => write.ttl), [60, 60]);
+});
+
+test('dashboard summary preserves KPI summary and excludes raw rows and links', () => {
+  const context = createContext();
+  let buildOptions;
+  context.qltdGanttCacheGet_ = () => null;
+  context.qltdGanttBuildDataForProject_ = (_projectCode, _startedAt, options) => {
+    buildOptions = options;
+    return {
+    success: true,
+    projectCode: 'P1',
+    projectName: 'Project 1',
+    sourceSheet: 'Cong_viec',
+    data: [{
+      id: 'T1',
+      text: 'Task 1',
+      code: 'CV1',
+      status: 'IN_PROGRESS',
+      progress: 0.5,
+      start_date: '2026-07-01',
+      end_date: '2026-07-31',
+      owner: 'PTDA',
+      zone: 'Z1',
+      hangMuc: 'HM1',
+      raw: { Internal: 'must not leak' }
+    }],
+    links: [{ id: 'L1', source: 'T1', target: 'T2' }],
+    summary: { total: 1, inProgress: 1 },
+    warnings: [],
+    performance: { generatedAt: '2026-07-30T00:00:00.000Z' },
+    apiStatus: 'CONNECTED'
+    };
+  };
+  context.qltdGanttCachePut_ = () => ({ stored: true });
+  const result = vm.runInContext(`qltdDashboardGetSummaryForProject_('P1', {
+    email: 'user@example.com', role: 'EDITOR', deptCode: 'D1', context: 'PROJECT_DATA'
+  })`, context);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(buildOptions)),
+    { includeLinks: false, dashboardProjection: true }
+  );
+  assert.deepEqual(result.summary, { total: 1, inProgress: 1 });
+  assert.equal(result.links, undefined);
+  assert.equal(result.data[0].raw, undefined);
+  assert.equal(result.data[0].text, 'Task 1');
+  assert.equal(result.performance.fullGanttTaskCount, 1);
+  assert.equal(result.performance.fullGanttLinkCount, 0);
+  assert.equal(result.performance.linksBuilt, 0);
+  assert.equal(result.performance.rawRowsReturned, 0);
+});
+
+test('dashboard context rows keep only hierarchy fields needed by the resolver', () => {
+  const context = createContext();
+  context.__headers = [
+    'UID', 'Zone', 'Loai cong trinh', 'Cong trinh', 'Hang muc/Tang', 'WBS_LEVEL_SYS', 'InternalNote'
+  ];
+  context.__row = ['T1', 'Z1', 'Háº¡ táº§ng', 'CT1', 'HM1', 2, 'must not copy'];
+  const result = JSON.parse(vm.runInContext(
+    'JSON.stringify(qltdGanttBuildContextRawRow_(__headers, __row))',
+    context
+  ));
+  assert.deepEqual(result, {
+    Zone: 'Z1',
+    'Loai cong trinh': 'Háº¡ táº§ng',
+    'Cong trinh': 'CT1',
+    'Hang muc/Tang': 'HM1',
+    WBS_LEVEL_SYS: 2
+  });
 });
 
 function buildFixtureProjection(source) {

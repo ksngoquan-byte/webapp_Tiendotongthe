@@ -62,49 +62,6 @@ function putCache(method, url, payload, ttlMs, status = 200, headers = [['conten
   });
 }
 
-function seedProjectsFromBootstrap(url, bootstrap) {
-  if (!bootstrap || bootstrap.success === false || !Array.isArray(bootstrap.projects)) return;
-  const base = new URL(url);
-  const email = base.searchParams.get('email') || '';
-  const payload = {
-    success: true,
-    projects: bootstrap.projects,
-    apiStatus: bootstrap.apiStatus || 'CONNECTED',
-    source: bootstrap.source || 'users_and_projects_sheets'
-  };
-
-  const withEmail = new URL(url);
-  withEmail.searchParams.set('action', 'listProjects');
-  withEmail.searchParams.set('email', email);
-  putCache('GET', withEmail.toString(), payload, 60000);
-
-  const withoutEmail = new URL(url);
-  withoutEmail.searchParams.set('action', 'listProjects');
-  withoutEmail.searchParams.delete('email');
-  putCache('GET', withoutEmail.toString(), payload, 60000);
-}
-
-async function fetchProfileThroughBootstrap(originalFetch, input, init, url) {
-  const bootstrapUrl = new URL(url);
-  bootstrapUrl.searchParams.set('action', 'bootstrap');
-  const bootstrapResponse = await originalFetch(bootstrapUrl.toString(), init);
-  if (!bootstrapResponse.ok) return originalFetch(input, init);
-
-  let bootstrap;
-  try {
-    bootstrap = await bootstrapResponse.clone().json();
-  } catch (_error) {
-    return originalFetch(input, init);
-  }
-
-  if (!bootstrap || bootstrap.success === false || !bootstrap.profile) {
-    return jsonResponse(bootstrap || { success: false, message: 'BOOTSTRAP_INVALID' }, bootstrapResponse.status, Array.from(bootstrapResponse.headers.entries()));
-  }
-
-  seedProjectsFromBootstrap(url, bootstrap);
-  return jsonResponse(bootstrap.profile, bootstrapResponse.status, Array.from(bootstrapResponse.headers.entries()));
-}
-
 function seedDepartmentDashboards(url, body, status, headers) {
   try {
     const payload = JSON.parse(body);
@@ -160,10 +117,6 @@ export function installApiReadCache(target = window) {
 
     if (normalizedAction === 'health') {
       return jsonResponse({ success: true, service: 'QLTD_DEV_API', status: 'OK', clientBypass: true });
-    }
-
-    if (method === 'GET' && normalizedAction === 'profile') {
-      return fetchProfileThroughBootstrap(originalFetch, input, init, url);
     }
 
     if (method === 'GET' && normalizedAction === 'getmainmilestones') {

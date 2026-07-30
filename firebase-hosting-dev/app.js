@@ -68,6 +68,11 @@ let qltdSelectedMonthCode = getDefaultMonthCode();
 let qltdSelectedMasterCode = '';
 let qltdSelectedWeekId = '';
 let qltdGanttPayload = null;
+let qltdDashboardPayload = null;
+let qltdDashboardLoadRequestSeq = 0;
+const qltdDashboardCache = new Map();
+const qltdDashboardRequests = new Map();
+const QLTD_DASHBOARD_CACHE_TTL_MS = 60000;
 let qltdGanttZoom = 'month';
 let qltdGanttShowLinks = true;
 let qltdGanttShowDates = true;
@@ -92,6 +97,7 @@ const QLTD_GANTT_BUSY_MAX_ATTEMPTS = 4;
 let qltdBudgetSyncRunning = false;
 let qltdActiveView = 'dashboard';
 let qltdDhtmlxLoadPromise = null;
+let qltdPbDetailUiLoadPromise = null;
 let qltdExcelJsLoadPromise = null;
 let qltdHtmlToImageLoadPromise = null;
 let qltdDhtmlxGanttInitialized = false;
@@ -164,6 +170,10 @@ let qltdNotificationLoadRequestSeq = 0;
 let qltdNotificationSessionVersion = 0;
 let qltdNotificationNavigationSeq = 0;
 let qltdNotificationLoadPromise = null;
+let qltdNotificationSummaryPromise = null;
+let qltdNotificationSummaryExpiresAt = 0;
+let qltdNotificationSummaryScheduled = false;
+const QLTD_NOTIFICATION_SUMMARY_TTL_MS = 30000;
 const qltdNotificationMarkingIds = new Set();
 let qltdNotificationHighlight = null;
 let qltdNotificationState = {
@@ -261,6 +271,10 @@ function renderSignedOut() {
   registrationGate?.hide();
   clearWeeklyTaskSessionState();
   clearNotificationState();
+  qltdDashboardPayload = null;
+  qltdDashboardLoadRequestSeq += 1;
+  qltdDashboardCache.clear();
+  qltdDashboardRequests.clear();
   currentUserProfile = null;
   currentPermissions = { ...DEFAULT_PERMISSIONS };
   lastAuthenticatedUser = null;
@@ -519,6 +533,9 @@ function clearNotificationState() {
   qltdNotificationLoadRequestSeq += 1;
   qltdNotificationNavigationSeq += 1;
   qltdNotificationLoadPromise = null;
+  qltdNotificationSummaryPromise = null;
+  qltdNotificationSummaryExpiresAt = 0;
+  qltdNotificationSummaryScheduled = false;
   qltdNotificationMarkingIds.clear();
   qltdNotificationHighlight = null;
   qltdNotificationState = {
@@ -533,6 +550,50 @@ function clearNotificationState() {
     actionRequiredCount: 0
   };
   renderNotificationCenter();
+}
+
+async function loadNotificationSummary(options = {}) {
+  if (!auth?.currentUser || !isAuthenticatedUser()) return null;
+  if (!options.force && qltdNotificationSummaryExpiresAt > Date.now()) return qltdNotificationState;
+  if (qltdNotificationSummaryPromise) return qltdNotificationSummaryPromise;
+  const sessionVersion = qltdNotificationSessionVersion;
+  let summaryPromise;
+  summaryPromise = (async () => {
+    try {
+      const result = await fetchBackendJson('notifications_summary', {}, { auth: true });
+      if (!result?.success || sessionVersion !== qltdNotificationSessionVersion) return null;
+      const data = result.data || result;
+      qltdNotificationState = {
+        ...qltdNotificationState,
+        unreadCount: Math.max(0, Number(data.unreadCount) || 0),
+        actionRequiredCount: Math.max(0, Number(data.actionRequiredCount) || 0)
+      };
+      qltdNotificationSummaryExpiresAt = Date.now() + QLTD_NOTIFICATION_SUMMARY_TTL_MS;
+      renderNotificationCenter();
+      return qltdNotificationState;
+    } catch (error) {
+      console.info('[QLTD] notification summary unavailable; full list remains on demand', error?.message || error);
+      return null;
+    } finally {
+      if (qltdNotificationSummaryPromise === summaryPromise) qltdNotificationSummaryPromise = null;
+    }
+  })();
+  qltdNotificationSummaryPromise = summaryPromise;
+  return summaryPromise;
+}
+
+function scheduleNotificationSummaryAfterDashboard() {
+  if (qltdNotificationSummaryScheduled || qltdNotificationSummaryExpiresAt > Date.now()) return;
+  qltdNotificationSummaryScheduled = true;
+  const run = () => {
+    qltdNotificationSummaryScheduled = false;
+    void loadNotificationSummary();
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 1500 });
+  } else {
+    window.setTimeout(run, 0);
+  }
 }
 
 async function loadNotifications(options = {}) {
@@ -566,6 +627,7 @@ async function loadNotifications(options = {}) {
         unreadCount,
         actionRequiredCount: Math.max(0, Number(data.actionRequiredCount) || 0)
       };
+      qltdNotificationSummaryExpiresAt = Date.now() + QLTD_NOTIFICATION_SUMMARY_TTL_MS;
       renderNotificationCenter();
       return qltdNotificationState;
     } catch (error) {
@@ -728,6 +790,7 @@ function renderProjectOptions(projects = []) {
     selector.appendChild(option);
     selector.disabled = true;
     qltdGanttPayload = null;
+    qltdDashboardPayload = null;
     if (status) {
       status.textContent = 'Ch\u01b0a c\u00f3 d\u1ef1 \u00e1n';
       status.classList.remove('hidden');
@@ -748,9 +811,8 @@ function renderProjectOptions(projects = []) {
   const hasStoredProject = projects.some((project) => project.projectCode === storedProjectCode);
   selector.value = hasStoredProject ? storedProjectCode : projects[0].projectCode;
   setStoredProjectCode(selector.value);
-  if (qltdActiveView === 'dashboard' || qltdActiveView === 'gantt') {
-    loadGanttDataForSelectedProject(selector.value);
-  }
+  if (qltdActiveView === 'dashboard') loadDashboardSummaryForSelectedProject(selector.value);
+  if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
 
   if (status) {
     status.textContent = '';
@@ -764,9 +826,8 @@ function renderProjectOptions(projects = []) {
     if (qltdActiveView === 'report') loadDeptPlansForSelectedProject(selector.value);
     if (qltdActiveView === 'budget') loadBudgetDashboardForSelectedProject({ force: true });
     if (qltdActiveView === 'admin') loadAdminMasterApprovals();
-    if (qltdActiveView === 'dashboard' || qltdActiveView === 'gantt') {
-      loadGanttDataForSelectedProject(selector.value);
-    }
+    if (qltdActiveView === 'dashboard') loadDashboardSummaryForSelectedProject(selector.value);
+    if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
   };
 }
 
@@ -1806,7 +1867,6 @@ function ensureWeb07Panels() {
 
 function showWeb07View(viewName, options = {}) {
   let viewLoadPromise = null;
-  let ganttLoadStarted = false;
   qltdActiveView = viewName;
   ensureWeb07Panels();
   if (viewName === 'report') ensureDeptPlanPanel();
@@ -1847,7 +1907,16 @@ function showWeb07View(viewName, options = {}) {
     ));
   });
 
-  if (viewName === 'dashboard' || viewName === 'gantt') {
+  if (viewName === 'dashboard' && !options.skipDataLoad) {
+    const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+    if (projectCode) {
+      viewLoadPromise = qltdDashboardMode === 'department'
+        ? loadAndRenderDepartmentDashboard()
+        : loadDashboardSummaryForSelectedProject(projectCode);
+    }
+  }
+
+  if (viewName === 'gantt' && !options.skipDataLoad) {
     const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
     const needsGanttData = projectCode && (
       qltdGanttDirtyProjects.has(projectCode) ||
@@ -1855,21 +1924,18 @@ function showWeb07View(viewName, options = {}) {
       String(qltdGanttPayload.projectCode || '') !== String(projectCode)
     );
     if (needsGanttData) {
-      ganttLoadStarted = true;
       viewLoadPromise = loadGanttDataForSelectedProject(projectCode);
-    }
-  }
-
-  if (viewName === 'gantt' && !ganttLoadStarted) {
-    const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
-    if (qltdGanttPayload && String(qltdGanttPayload.projectCode || '') === String(projectCode)) {
+    } else if (qltdGanttPayload && String(qltdGanttPayload.projectCode || '') === String(projectCode)) {
       renderGanttPanel(qltdGanttPayload);
     }
   }
 
   if (viewName === 'report') {
     const projectCode = document.getElementById('projectSelector')?.value || '';
-    if (projectCode && !options.skipDataLoad) viewLoadPromise = loadDeptPlansForSelectedProject(projectCode);
+    viewLoadPromise = ensurePbDetailUiLoaded().then(() => {
+      if (projectCode && !options.skipDataLoad) return loadDeptPlansForSelectedProject(projectCode);
+      return null;
+    });
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
 
@@ -2896,7 +2962,10 @@ function markMasterApprovalDataDirty(result, fallbackApproval = {}) {
   } else if (projectCode && deptCode && weekCode) {
     invalidateWeeklyTaskCacheKey(getWeeklyTaskCacheKey(projectCode, deptCode, weekCode));
   }
-  if (projectCode) qltdGanttDirtyProjects.add(projectCode);
+  if (projectCode) {
+    qltdGanttDirtyProjects.add(projectCode);
+    qltdInvalidateDashboardCacheForProject(projectCode);
+  }
   if (projectCode) {
     qltdProjectScheduleStates.set(String(projectCode), {
       projectCode: String(projectCode),
@@ -4765,8 +4834,13 @@ async function saveAdminApprovedObjective() {
   qltdDepartmentDashboardCache.delete(projectCode);
   qltdGanttDirtyProjects.add(projectCode);
   qltdGanttForceRefreshProjects.add(projectCode);
+  qltdInvalidateDashboardCacheForProject(projectCode);
   try {
-    await loadGanttDataForSelectedProject(projectCode, { forceRefresh: true });
+    if (qltdActiveView === 'gantt') {
+      await loadGanttDataForSelectedProject(projectCode, { forceRefresh: true });
+    } else if (qltdActiveView === 'dashboard') {
+      await loadDashboardSummaryForSelectedProject(projectCode, { forceRefresh: true });
+    }
     await loadWeeklyTaskDataForCurrent({ force: true });
   } catch (error) {
     showWeeklyToast('Đã lưu mục tiêu nhưng chưa thể làm mới giao diện. Vui lòng tải lại dữ liệu.');
@@ -5923,7 +5997,10 @@ async function saveWeeklyTaskUpdate() {
       showWeeklyToast(message);
       qltdWeeklySaveRequestId = '';
       renderWeeklyTaskRegion();
-      if (!reporterProposal && projectCode) qltdGanttDirtyProjects.add(projectCode);
+      if (!reporterProposal && projectCode) {
+        qltdGanttDirtyProjects.add(projectCode);
+        qltdInvalidateDashboardCacheForProject(projectCode);
+      }
       return;
     }
     if (status) status.textContent = 'Không thể xác nhận kết quả lưu. Vui lòng kiểm tra kết nối và tải lại dữ liệu.';
@@ -5977,10 +6054,13 @@ function formatWeeklyDateTime(value) { if (!value) return ''; const date = new D
 async function markWeeklyGanttRefreshRequired(projectCode, options = {}) {
   if (!projectCode) return;
   qltdGanttDirtyProjects.add(projectCode);
+  qltdInvalidateDashboardCacheForProject(projectCode);
   if (options.forceRefresh) qltdGanttForceRefreshProjects.add(projectCode);
   const selectedProjectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
-  if (selectedProjectCode === projectCode && (qltdActiveView === 'dashboard' || qltdActiveView === 'gantt')) {
+  if (selectedProjectCode === projectCode && qltdActiveView === 'gantt') {
     await loadGanttDataForSelectedProject(projectCode, { forceRefresh: !!options.forceRefresh });
+  } else if (selectedProjectCode === projectCode && qltdActiveView === 'dashboard') {
+    await loadDashboardSummaryForSelectedProject(projectCode, { forceRefresh: true });
   }
 }
 
@@ -6085,6 +6165,7 @@ async function handleProjectScheduleRecalculate(projectCode) {
     qltdProjectScheduleStates.set(code, normalizeProjectScheduleState(result, code));
     qltdGanttDirtyProjects.add(code);
     qltdGanttForceRefreshProjects.add(code);
+    qltdInvalidateDashboardCacheForProject(code);
     qltdDepartmentDashboardCache.delete(code);
     await loadGanttDataForSelectedProject(code, { forceRefresh: true });
     window.alert([
@@ -6215,6 +6296,81 @@ function qltdWeb07RequestGanttPayload(projectCode, options = {}) {
   return qltdWeb07GetOrCreateGanttRequest(requestKey, () => qltdWeb07FetchGanttPayload(code, options));
 }
 
+function qltdDashboardAccessKey(projectCode) {
+  return [
+    String(currentUserProfile?.email || auth?.currentUser?.email || '').trim().toLowerCase(),
+    normalizeRoleKey(currentUserProfile?.role),
+    String(projectCode || '').trim().toUpperCase()
+  ].join('::');
+}
+
+function qltdInvalidateDashboardCacheForProject(projectCode) {
+  const suffix = `::${String(projectCode || '').trim().toUpperCase()}`;
+  Array.from(qltdDashboardCache.keys()).forEach((key) => {
+    if (key.endsWith(suffix)) qltdDashboardCache.delete(key);
+  });
+  qltdDepartmentDashboardCache.delete(String(projectCode || '').trim());
+}
+
+function qltdRequestDashboardSummary(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code) return Promise.resolve(null);
+  const cacheKey = qltdDashboardAccessKey(code);
+  if (options.forceRefresh) qltdDashboardCache.delete(cacheKey);
+  const cached = qltdDashboardCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.payload);
+  if (qltdDashboardRequests.has(cacheKey)) return qltdDashboardRequests.get(cacheKey);
+
+  const request = fetchBackendJson('dashboardSummary', {
+    projectCode: code,
+    forceRefresh: options.forceRefresh ? '1' : ''
+  }, { auth: true }).then((payload) => {
+    if (!payload || payload.success === false) {
+      throw new Error(payload && (payload.message || payload.error) || 'dashboardSummary failed');
+    }
+    qltdDashboardCache.set(cacheKey, {
+      payload,
+      expiresAt: Date.now() + QLTD_DASHBOARD_CACHE_TTL_MS
+    });
+    return payload;
+  }).finally(() => {
+    if (qltdDashboardRequests.get(cacheKey) === request) qltdDashboardRequests.delete(cacheKey);
+  });
+  qltdDashboardRequests.set(cacheKey, request);
+  return request;
+}
+
+function qltdIsCurrentDashboardLoad(projectCode, requestSeq) {
+  const selectedProjectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+  return requestSeq === qltdDashboardLoadRequestSeq &&
+    qltdActiveView === 'dashboard' &&
+    (!selectedProjectCode || String(selectedProjectCode) === String(projectCode));
+}
+
+async function loadDashboardSummaryForSelectedProject(projectCode, options = {}) {
+  const code = String(projectCode || '').trim();
+  if (!code) return null;
+  const requestSeq = ++qltdDashboardLoadRequestSeq;
+  ensureWeb07Panels();
+  if (qltdActiveView === 'dashboard' && qltdDashboardMode === 'project') renderDashboardLoading(code);
+  try {
+    const payload = await qltdRequestDashboardSummary(code, options);
+    if (!qltdIsCurrentDashboardLoad(code, requestSeq)) return payload;
+    qltdDashboardPayload = payload;
+    if (qltdDashboardMode === 'project') {
+      renderDashboardFromGanttData(payload);
+      scheduleNotificationSummaryAfterDashboard();
+    }
+    return payload;
+  } catch (error) {
+    console.error('Cannot load dashboard summary', error);
+    if (!qltdIsCurrentDashboardLoad(code, requestSeq)) return null;
+    qltdDashboardPayload = null;
+    renderDashboardError(error);
+    return null;
+  }
+}
+
 function loadGanttDataForSelectedProject(projectCode, options = {}) {
   const code = String(projectCode || '').trim();
   if (!code) return Promise.resolve(null);
@@ -6229,8 +6385,7 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
   if (selectedProjectCode && String(selectedProjectCode) !== String(projectCode)) return null;
   const requestSeq = ++qltdGanttLoadRequestSeq;
   ensureWeb07Panels();
-  renderGanttLoading(projectCode);
-  renderDashboardLoading(projectCode);
+  if (qltdActiveView === 'gantt') renderGanttLoading(projectCode);
 
   try {
     const scheduleStateRequest = loadProjectScheduleState(projectCode, { render: false });
@@ -6242,14 +6397,17 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
         }
       }
     });
-    await scheduleStateRequest;
     if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return payload;
     qltdGanttPayload = payload;
     if (qltdActiveView === 'report' && qltdDeptPlanPayload?.success) renderDeptPlans(qltdDeptPlanPayload);
     await loadMainMilestonesForProject(projectCode, payload);
     if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return payload;
-    renderDashboardFromGanttData(payload);
-    renderGanttPanel(payload);
+    if (qltdActiveView === 'gantt') renderGanttPanel(payload);
+    void scheduleStateRequest.then(() => {
+      if (qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq) && qltdActiveView === 'gantt') {
+        refreshProjectScheduleControlInPlace(projectCode);
+      }
+    });
     qltdGanttDirtyProjects.delete(projectCode);
     qltdGanttForceRefreshProjects.delete(projectCode);
     return payload;
@@ -6257,8 +6415,7 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
     console.error('Cannot load gantt data', error);
     if (!qltdWeb07IsCurrentGanttLoad(projectCode, requestSeq)) return null;
     qltdGanttPayload = null;
-    renderDashboardError(error);
-    renderGanttError(error);
+    if (qltdActiveView === 'gantt') renderGanttError(error);
     return null;
   }
 }
@@ -6284,6 +6441,7 @@ function renderNoProjectDashboardState() {
 }
 
 function renderNoProjectGanttState() {
+  if (qltdActiveView !== 'gantt') return;
   const panel = document.getElementById('web07GanttPanel');
   if (!panel) return;
   resetWeb07DhtmlxGantt('renderNoProjectGanttState');
@@ -6375,6 +6533,7 @@ async function qltdWeb07WaitForRenderableGanttContainer(container) {
   return false;
 }
 function renderGanttLoading(projectCode) {
+  if (qltdActiveView !== 'gantt') return;
   const panel = document.getElementById('web07GanttPanel');
   if (!panel) return;
   resetWeb07DhtmlxGantt('renderGanttLoading');
@@ -6414,6 +6573,7 @@ function renderBudgetDashboardError(error) {
 }
 
 function renderGanttError(error) {
+  if (qltdActiveView !== 'gantt') return;
   const panel = document.getElementById('web07GanttPanel');
   if (!panel) return;
   resetWeb07DhtmlxGantt('renderGanttError');
@@ -6442,7 +6602,7 @@ function renderDashboardFromGanttData(payload) {
   if (!payload || !payload.success) {
     panel.innerHTML = `
       <div class="web07-card">
-        <p class="empty-state">Endpoint ganttData chưa trả dữ liệu hợp lệ.</p>
+        <p class="empty-state">Endpoint dashboardSummary chưa trả dữ liệu hợp lệ.</p>
         <p class="web07-muted">${escapeHtml(payload && (payload.message || payload.error) || '')}</p>
       </div>
     `;
@@ -6505,7 +6665,10 @@ function renderDashboardFromGanttData(payload) {
   bindDashboardContextFilters(payload);
   const refreshButton = document.getElementById('execRefreshButton');
   if (refreshButton) {
-    refreshButton.onclick = () => loadGanttDataForSelectedProject(payload.projectCode || getStoredProjectCode());
+    refreshButton.onclick = () => loadDashboardSummaryForSelectedProject(
+      payload.projectCode || getStoredProjectCode(),
+      { forceRefresh: true }
+    );
   }
 }
 
@@ -6523,19 +6686,27 @@ function bindDashboardModeSwitch() {
       if (mode === qltdDashboardMode) return;
       qltdDashboardMode = mode;
       if (mode === 'department') loadAndRenderDepartmentDashboard();
-      else if (qltdGanttPayload) renderDashboardFromGanttData(qltdGanttPayload);
+      else if (qltdDashboardPayload) {
+        renderDashboardFromGanttData(qltdDashboardPayload);
+        scheduleNotificationSummaryAfterDashboard();
+      } else {
+        loadDashboardSummaryForSelectedProject(getStoredProjectCode());
+      }
     };
   });
 }
 
 async function getDepartmentDashboardPayloads(projectCode, forceRefresh) {
-  const projects = qltdProjectRegistry;
+  const selectedProjectCode = String(projectCode || '').trim();
+  const projects = selectedProjectCode
+    ? qltdProjectRegistry.filter((project) => String(project.projectCode || '') === selectedProjectCode)
+    : qltdProjectRegistry;
   const warnings = [];
   const payloads = (await Promise.all(projects.map(async (project) => {
     const code = String(project.projectCode || '');
     if (!forceRefresh && qltdDepartmentDashboardCache.has(code)) return qltdDepartmentDashboardCache.get(code);
     try {
-      const payload = await qltdWeb07RequestGanttPayload(code, { forceRefresh: !!forceRefresh });
+      const payload = await qltdRequestDashboardSummary(code, { forceRefresh: !!forceRefresh });
       if (!payload || payload.success === false) throw new Error(payload && (payload.message || payload.error) || 'INVALID_PAYLOAD');
       qltdDepartmentDashboardCache.set(code, payload);
       return payload;
@@ -6548,14 +6719,21 @@ async function getDepartmentDashboardPayloads(projectCode, forceRefresh) {
 }
 
 async function getDepartmentDashboardDetailPayloads(projectCode, deptCode, forceRefresh) {
-  const projects = qltdProjectRegistry;
+  const selectedProjectCode = String(projectCode || '').trim();
+  const selectedDeptCode = String(deptCode || '').trim();
+  const projects = selectedProjectCode
+    ? qltdProjectRegistry.filter((project) => String(project.projectCode || '') === selectedProjectCode)
+    : qltdProjectRegistry;
   const warnings = [];
   const payloads = (await Promise.all(projects.map(async (project) => {
     const code = String(project.projectCode || '');
-    const cacheKey = `${code}::ALL`;
+    const cacheKey = `${code}::${selectedDeptCode || 'ALL'}`;
     if (!forceRefresh && qltdDepartmentDashboardDetailCache.has(cacheKey)) return qltdDepartmentDashboardDetailCache.get(cacheKey);
     try {
-      const payload = await fetchBackendJson('listDeptPlans', { projectCode: code }, { auth: true });
+      const payload = await fetchBackendJson('listDeptPlans', {
+        projectCode: code,
+        deptCode: selectedDeptCode
+      }, { auth: true });
       if (!payload || payload.success === false) throw new Error(payload && (payload.message || payload.error) || 'INVALID_DEPT_PLAN_PAYLOAD');
       qltdDepartmentDashboardDetailCache.set(cacheKey, payload);
       return payload;
@@ -8251,6 +8429,7 @@ function qltdGanttBaselineRenderSummary_(payload) {
 }
 
 function renderGanttPanel(payload) {
+  if (qltdActiveView !== 'gantt') return;
   const panel = document.getElementById('web07GanttPanel');
   if (!panel) return;
   resetWeb07DhtmlxGantt('renderGanttPanel');
@@ -8368,10 +8547,6 @@ function renderGanttPanel(payload) {
   qltdWeb07DecorateGanttToolbar();
   bindGanttToolbar(payload);
   qltdWeb07BindExcelButton();
-  if (qltdActiveView !== 'gantt') {
-    return;
-  }
-
   applyGanttFilters();
 }
 
@@ -10620,12 +10795,27 @@ function getDhtmlxGanttInstance() {
   return window.gantt || (window.dhtmlxgantt && window.dhtmlxgantt.gantt) || null;
 }
 
+function ensureDhtmlxGanttStylesheet() {
+  const href = 'https://cdn.dhtmlx.com/gantt/edge/dhtmlxgantt.css';
+  const existing = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+    .find((link) => String(link.href || '').includes('dhtmlxgantt.css'));
+  if (existing) return Promise.resolve(existing);
+  return new Promise((resolve) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = href;
+    link.onload = () => resolve(link);
+    link.onerror = () => resolve(link);
+    document.head.appendChild(link);
+  });
+}
+
 function ensureDhtmlxGanttLoaded() {
   const current = getDhtmlxGanttInstance();
-  if (current) return Promise.resolve(current);
+  if (current) return ensureDhtmlxGanttStylesheet().then(() => current);
   if (qltdDhtmlxLoadPromise) return qltdDhtmlxLoadPromise;
 
-  qltdDhtmlxLoadPromise = new Promise((resolve) => {
+  const scriptPromise = new Promise((resolve) => {
     const appendScript = () => {
       const script = document.createElement('script');
       script.src = 'https://cdn.dhtmlx.com/gantt/edge/dhtmlxgantt.js';
@@ -10647,8 +10837,36 @@ function ensureDhtmlxGanttLoaded() {
       }
     }, 500);
   });
+  qltdDhtmlxLoadPromise = Promise.all([
+    ensureDhtmlxGanttStylesheet(),
+    scriptPromise
+  ]).then((results) => results[1]);
 
   return qltdDhtmlxLoadPromise;
+}
+
+function ensurePbDetailUiLoaded() {
+  if (window.__qltdPbDetailUiLoaded) return Promise.resolve(true);
+  if (qltdPbDetailUiLoadPromise) return qltdPbDetailUiLoadPromise;
+  qltdPbDetailUiLoadPromise = new Promise((resolve) => {
+    const existing = Array.from(document.scripts)
+      .find((script) => String(script.src || '').includes('pb-detail-ui.js'));
+    if (existing) {
+      if (window.__qltdPbDetailUiLoaded) {
+        resolve(true);
+      } else {
+        existing.addEventListener('load', () => resolve(true), { once: true });
+        existing.addEventListener('error', () => resolve(false), { once: true });
+      }
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = './pb-detail-ui.js?v=PERF_MINIMUM_BOOT_1';
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.head.appendChild(script);
+  });
+  return qltdPbDetailUiLoadPromise;
 }
 
 function setGanttZoom(gantt, zoom) {
@@ -10943,6 +11161,12 @@ async function loadMainMilestonesForProject(projectCode, payload = qltdGanttPayl
     payloadKeys.length ? 'GANTT_PAYLOAD' : 'LOCAL_STORAGE'
   );
 
+  if (hasMainMilestoneApiSource(payload)) {
+    if (!isCurrentMainMilestoneLoad(requestSeq, projectKey)) return;
+    cacheMainMilestonesForProject(projectKey, payload);
+    return;
+  }
+
   try {
     const response = await fetchBackendJson('getMainMilestones', {
       projectCode: projectKey,
@@ -10963,18 +11187,6 @@ async function loadMainMilestonesForProject(projectCode, payload = qltdGanttPayl
     console.warn('Apps Script main milestone API rejected read; trying compatibility source', response);
   } catch (error) {
     console.warn('Apps Script main milestone API unavailable; trying compatibility source', error);
-  }
-
-  if (hasMainMilestoneApiSource(payload)) {
-    if (!isCurrentMainMilestoneLoad(requestSeq, projectKey)) return;
-    applyMainMilestoneMigration(
-      payloadKeys,
-      payload && payload.data,
-      projectKey,
-      'GANTT_PAYLOAD'
-    );
-    cacheMainMilestonesForProject(projectKey, payload);
-    return;
   }
 
   if (!db || !aliases.length) return;
@@ -11524,12 +11736,16 @@ async function fetchBackendJson(action, params = {}, options = {}) {
   }
 }
 
-async function fetchBackendProfile() {
-  await fetchBackendJson('health');
-  return fetchBackendJson('profile');
+async function fetchBackendBootstrap() {
+  return fetchBackendJson('bootstrap', {}, { auth: true });
 }
 
-function renderApp(user, role, profile = {}) {
+async function fetchBackendProfile() {
+  const bootstrap = await fetchBackendBootstrap();
+  return bootstrap?.profile || bootstrap;
+}
+
+function renderApp(user, role, profile = {}, projects = []) {
   registrationGate?.hide();
   showOnly(els.appShell);
   const effectiveProfile = {
@@ -11541,9 +11757,9 @@ function renderApp(user, role, profile = {}) {
   applyPermissions(effectiveProfile);
   ensureWeb07Panels();
   bindWeb07Navigation();
-  showWeb07View('dashboard');
-  qltdProjectsLoadPromise = loadProjectsForSelector();
-  void loadNotifications();
+  showWeb07View('dashboard', { skipDataLoad: true });
+  renderProjectOptions(Array.isArray(projects) ? projects : []);
+  qltdProjectsLoadPromise = Promise.resolve(qltdProjectRegistry);
 
   if (els.userAvatar) {
     els.userAvatar.src = user.photoURL || '';
@@ -11576,12 +11792,14 @@ async function bootstrapAuthenticatedUser(user) {
   setStatus('Đang kiểm tra hồ sơ người dùng...', 'info');
 
   try {
-    const profile = await fetchBackendProfile();
+    const bootstrap = await fetchBackendBootstrap();
     if (requestSeq !== authBootstrapRequestSeq) return;
+    const profile = bootstrap?.profile || bootstrap;
 
-    if (!profile.success) {
-      const code = getProfileErrorCode(profile);
-      if ((code === 'USER_NOT_REGISTERED' || code === 'USER_NOT_FOUND') && profile.requiresRegistration === true) {
+    if (!bootstrap?.success || !profile?.success) {
+      const failedPayload = bootstrap?.success === false ? bootstrap : profile;
+      const code = getProfileErrorCode(failedPayload);
+      if ((code === 'USER_NOT_REGISTERED' || code === 'USER_NOT_FOUND') && failedPayload?.requiresRegistration === true) {
         registrationGate?.show(user);
         return;
       }
@@ -11597,7 +11815,7 @@ async function bootstrapAuthenticatedUser(user) {
         renderDenied(user, 'Vai trò tài khoản không hợp lệ. Vui lòng liên hệ quản trị.');
         return;
       }
-      renderApiError(user, new Error(profile.errorMessage || profile.message || 'Không tải được hồ sơ người dùng.'));
+      renderApiError(user, new Error(failedPayload?.errorMessage || failedPayload?.message || 'Không tải được hồ sơ người dùng.'));
       return;
     }
 
@@ -11605,7 +11823,7 @@ async function bootstrapAuthenticatedUser(user) {
       renderDenied(user, 'Hồ sơ người dùng chưa ACTIVE hoặc vai trò không hợp lệ.');
       return;
     }
-    renderApp(user, profile.role, profile);
+    renderApp(user, profile.role, profile, bootstrap.projects || []);
   } catch (error) {
     if (requestSeq === authBootstrapRequestSeq) renderApiError(user, error);
   }
@@ -11713,6 +11931,7 @@ boot();
 export {
   ADMIN_EMAILS,
   APPS_SCRIPT_DEV_URL,
+  fetchBackendBootstrap,
   fetchBackendProfile,
   getLocalRoleForEmail
 };

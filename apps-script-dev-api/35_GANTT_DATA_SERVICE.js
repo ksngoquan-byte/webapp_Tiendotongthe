@@ -4,6 +4,7 @@ const QLTD_GANTT_HEADER_SCAN_ROWS = 12;
 const QLTD_GANTT_MAX_SCAN_ROWS = 50000;
 const QLTD_GANTT_CACHE_VERSION = 'v4-hangmuc-display-dashboard';
 const QLTD_GANTT_CACHE_TTL_SECONDS = 120;
+const QLTD_DASHBOARD_CACHE_TTL_SECONDS = 60;
 const QLTD_GANTT_CACHE_CHUNK_CHARS = 25000;
 const QLTD_GANTT_CACHE_MAX_CHUNKS = 60;
 const QLTD_GANTT_LOCK_WAIT_MS = 15000;
@@ -30,7 +31,7 @@ const QLTD_GANTT_HEADER_ALIASES = {
   updateNote: ['ghi_chu_cap_nhat', 'update_note', 'cap_nhat']
 };
 
-function qltdGanttGetDataForProject_(projectCode) {
+function qltdGanttGetDataForProject_(projectCode, accessContext) {
   const startedAt = Date.now();
   const code = qltdProjectsNormalizeCode_(projectCode);
 
@@ -40,7 +41,7 @@ function qltdGanttGetDataForProject_(projectCode) {
     });
   }
 
-  const cached = qltdGanttCacheGet_(code);
+  const cached = qltdGanttCacheGet_(code, accessContext);
   if (cached) {
     cached.performance = Object.assign({}, cached.performance || {}, {
       cacheHit: true,
@@ -54,7 +55,7 @@ function qltdGanttGetDataForProject_(projectCode) {
   try {
     locked = lock.tryLock(QLTD_GANTT_LOCK_WAIT_MS);
 
-    const cachedAfterWait = qltdGanttCacheGet_(code);
+    const cachedAfterWait = qltdGanttCacheGet_(code, accessContext);
     if (cachedAfterWait) {
       cachedAfterWait.performance = Object.assign({}, cachedAfterWait.performance || {}, {
         cacheHit: true,
@@ -78,7 +79,7 @@ function qltdGanttGetDataForProject_(projectCode) {
 
     const result = qltdGanttBuildDataForProject_(code, startedAt);
     if (result && result.success !== false) {
-      const cacheResult = qltdGanttCachePut_(code, result);
+      const cacheResult = qltdGanttCachePut_(code, result, accessContext);
       if (cacheResult && cacheResult.warning) {
         result.warnings = (result.warnings || []).concat([cacheResult.warning]);
       }
@@ -94,7 +95,8 @@ function qltdGanttGetDataForProject_(projectCode) {
   }
 }
 
-function qltdGanttBuildDataForProject_(code, startedAt) {
+function qltdGanttBuildDataForProject_(code, startedAt, options) {
+  const buildOptions = options || {};
   const warnings = [];
   const project = qltdProjectsGetByCode_(code);
   if (!project || !project.masterSpreadsheetId) {
@@ -146,73 +148,65 @@ function qltdGanttBuildDataForProject_(code, startedAt) {
     }
   });
 
-  const tasks = qltdGanttBuildTasks_(values, detected, warnings, sheetResult.sheetName);
+  const tasks = qltdGanttBuildTasks_(values, detected, warnings, sheetResult.sheetName, {
+    contextOnlyRaw: !!buildOptions.dashboardProjection
+  });
   qltdTaskContextResolveDataset_(tasks, { projectCode: project.projectCode }, warnings);
-  const links = qltdTaskContextFilterLinks_(qltdGanttBuildLinks_(tasks, warnings), tasks, warnings);
+  const links = buildOptions.includeLinks === false
+    ? []
+    : qltdTaskContextFilterLinks_(qltdGanttBuildLinks_(tasks, warnings), tasks, warnings);
   tasks.forEach(function(task) {
     delete task._predecessor;
     delete task._linkType;
   });
+  const publicTasks = qltdTaskContextBuildPublicDataset_(tasks);
+  const responseTasks = buildOptions.dashboardProjection
+    ? qltdDashboardProjectTasks_(publicTasks)
+    : publicTasks;
 
-  return qltdGanttSuccess_(project, sheetResult.sheetName, qltdTaskContextBuildPublicDataset_(tasks), links,
+  return qltdGanttSuccess_(project, sheetResult.sheetName, responseTasks, links,
     qltdGanttSummarizeTasks_(tasks), warnings,
     qltdGanttPerformance_(startedAt, false, readResult.rowsRead, readResult.columnsRead, tasks.length));
 }
 
 function qltdGanttReadSourceValues_(sheet, warnings) {
-  const maxRows = sheet.getMaxRows();
   const maxColumns = sheet.getMaxColumns();
   const lastColumn = Math.max(1, Math.min(sheet.getLastColumn() || maxColumns || 1, maxColumns || 1));
-  const headerRowCount = Math.max(1, Math.min(QLTD_GANTT_HEADER_SCAN_ROWS, maxRows));
-  const headerValues = sheet.getRange(1, 1, headerRowCount, lastColumn).getValues();
-  const detected = qltdGanttDetectHeader_(headerValues);
-
+  const physicalLastRow = Math.max(1, Number(sheet.getLastRow() || 1));
+  const boundedLastRow = Math.min(physicalLastRow, QLTD_GANTT_MAX_SCAN_ROWS);
+  if (physicalLastRow > QLTD_GANTT_MAX_SCAN_ROWS) {
+    warnings.push({
+      type: 'GANTT_SCAN_ROW_LIMIT_APPLIED',
+      sheetName: sheet.getName(),
+      lastRow: physicalLastRow,
+      scanRows: boundedLastRow
+    });
+  }
+  if (typeof qltdPerfIncrement_ === 'function') qltdPerfIncrement_('sheetRangeReads');
+  const values = sheet.getRange(1, 1, boundedLastRow, lastColumn).getValues();
+  const detected = qltdGanttDetectHeader_(values);
   if (!detected) {
-    const fallbackLastRow = Math.max(1, Math.min(sheet.getLastRow() || headerRowCount, QLTD_GANTT_MAX_SCAN_ROWS));
     return {
-      values: sheet.getRange(1, 1, fallbackLastRow, lastColumn).getValues(),
-      rowsRead: fallbackLastRow,
+      values: values,
+      rowsRead: boundedLastRow,
       columnsRead: lastColumn
     };
   }
-
   const idColumnIndex = qltdGanttFindAliasIndex_(detected.headerIndex, 'id');
   const textColumnIndex = qltdGanttFindAliasIndex_(detected.headerIndex, 'text');
-  const dataStartRow = detected.rowIndex + 2;
-  const availableRows = Math.max(0, maxRows - dataStartRow + 1);
-  const scanRows = Math.min(availableRows, QLTD_GANTT_MAX_SCAN_ROWS);
-
-  if (availableRows > QLTD_GANTT_MAX_SCAN_ROWS) {
-    warnings.push({ type: 'GANTT_SCAN_ROW_LIMIT_APPLIED', sheetName: sheet.getName(), maxRows: maxRows, scanRows: scanRows });
-  }
-
-  let lastDataRow = detected.rowIndex + 1;
-  if (scanRows > 0 && (idColumnIndex >= 0 || textColumnIndex >= 0)) {
-    const validIndexes = [idColumnIndex, textColumnIndex].filter(function(index) { return index >= 0; });
-    const scanStartColumnIndex = Math.min.apply(null, validIndexes);
-    const scanEndColumnIndex = Math.max.apply(null, validIndexes);
-    const scanWidth = scanEndColumnIndex - scanStartColumnIndex + 1;
-    const scanValues = sheet.getRange(dataStartRow, scanStartColumnIndex + 1, scanRows, scanWidth).getDisplayValues();
-    const idOffset = idColumnIndex >= 0 ? idColumnIndex - scanStartColumnIndex : -1;
-    const textOffset = textColumnIndex >= 0 ? textColumnIndex - scanStartColumnIndex : -1;
-
-    for (let index = scanValues.length - 1; index >= 0; index -= 1) {
-      const row = scanValues[index];
-      const hasId = idOffset >= 0 && String(row[idOffset] || '').trim() !== '';
-      const hasText = textOffset >= 0 && String(row[textOffset] || '').trim() !== '';
-      if (hasId || hasText) {
-        lastDataRow = dataStartRow + index;
-        break;
-      }
+  let lastDataIndex = detected.rowIndex;
+  for (let index = values.length - 1; index > detected.rowIndex; index -= 1) {
+    const row = values[index];
+    const hasId = idColumnIndex >= 0 && String(row[idColumnIndex] || '').trim() !== '';
+    const hasText = textColumnIndex >= 0 && String(row[textColumnIndex] || '').trim() !== '';
+    if (hasId || hasText) {
+      lastDataIndex = index;
+      break;
     }
-  } else {
-    lastDataRow = Math.max(detected.rowIndex + 1,
-      Math.min(sheet.getLastRow() || headerRowCount, QLTD_GANTT_MAX_SCAN_ROWS));
   }
-
-  const rowsRead = Math.max(detected.rowIndex + 1, lastDataRow);
+  const rowsRead = lastDataIndex + 1;
   return {
-    values: sheet.getRange(1, 1, rowsRead, lastColumn).getValues(),
+    values: values.slice(0, rowsRead),
     rowsRead: rowsRead,
     columnsRead: lastColumn
   };
@@ -230,15 +224,36 @@ function qltdGanttPerformance_(startedAt, cacheHit, rowsRead, columnsRead, taskC
   };
 }
 
-function qltdGanttCacheBaseKey_(projectCode) {
-  const safeCode = String(projectCode || '').toUpperCase().replace(/[^A-Z0-9_-]/g, '_');
-  return 'QLTD_GANTT_' + QLTD_GANTT_CACHE_VERSION + '_' + safeCode;
+function qltdGanttAccessScopeKey_(accessContext) {
+  const context = accessContext || {};
+  const text = [
+    String(context.email || '').trim().toLowerCase(),
+    String(context.role || '').trim().toUpperCase(),
+    String(context.deptCode || '').trim().toUpperCase(),
+    String(context.context || 'SYSTEM').trim().toUpperCase()
+  ].join('|');
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash * 33) + text.charCodeAt(index)) % 2147483647;
+  }
+  return Math.abs(hash).toString(36).toUpperCase();
 }
 
-function qltdGanttCacheGet_(projectCode) {
+function qltdGanttCacheBaseKey_(projectCode, accessContext) {
+  const safeCode = String(projectCode || '').toUpperCase().replace(/[^A-Z0-9_-]/g, '_');
+  return 'QLTD_GANTT_' + QLTD_GANTT_CACHE_VERSION + '_' + safeCode + '_' +
+    qltdGanttAccessScopeKey_(accessContext);
+}
+
+function qltdGanttCacheRegistryKey_(projectCode) {
+  const safeCode = String(projectCode || '').toUpperCase().replace(/[^A-Z0-9_-]/g, '_');
+  return 'QLTD_GANTT_' + QLTD_GANTT_CACHE_VERSION + '_' + safeCode + '_REGISTRY';
+}
+
+function qltdGanttCacheGet_(projectCode, accessContext) {
   try {
     const cache = CacheService.getScriptCache();
-    const baseKey = qltdGanttCacheBaseKey_(projectCode);
+    const baseKey = qltdGanttCacheBaseKey_(projectCode, accessContext);
     const manifestText = cache.get(baseKey + '_M');
     if (!manifestText) return null;
 
@@ -267,8 +282,9 @@ function qltdGanttCacheGet_(projectCode) {
   }
 }
 
-function qltdGanttCachePut_(projectCode, payload) {
+function qltdGanttCachePut_(projectCode, payload, accessContext, ttlSeconds) {
   try {
+    const cacheTtlSeconds = Math.max(1, Number(ttlSeconds || QLTD_GANTT_CACHE_TTL_SECONDS));
     const serialized = JSON.stringify(payload);
     const chunks = [];
     for (let offset = 0; offset < serialized.length; offset += QLTD_GANTT_CACHE_CHUNK_CHARS) {
@@ -290,15 +306,27 @@ function qltdGanttCachePut_(projectCode, payload) {
     }
 
     const cache = CacheService.getScriptCache();
-    const baseKey = qltdGanttCacheBaseKey_(projectCode);
+    const baseKey = qltdGanttCacheBaseKey_(projectCode, accessContext);
     const entries = {};
     chunks.forEach(function(chunk, index) { entries[baseKey + '_C' + index] = chunk; });
-    cache.putAll(entries, QLTD_GANTT_CACHE_TTL_SECONDS);
+    cache.putAll(entries, cacheTtlSeconds);
     cache.put(baseKey + '_M', JSON.stringify({
       chunkCount: chunks.length,
       cachedAt: Date.now(),
       charLength: serialized.length
-    }), QLTD_GANTT_CACHE_TTL_SECONDS);
+    }), cacheTtlSeconds);
+    const registryKey = qltdGanttCacheRegistryKey_(projectCode);
+    let registered = [];
+    try {
+      registered = JSON.parse(cache.get(registryKey) || '[]');
+    } catch (error) {
+      registered = [];
+    }
+    if (registered.indexOf(baseKey) === -1) registered.push(baseKey);
+    cache.put(registryKey, JSON.stringify(registered.slice(-20)), Math.max(
+      QLTD_GANTT_CACHE_TTL_SECONDS,
+      cacheTtlSeconds
+    ));
     return { stored: true };
   } catch (error) {
     console.warn('Gantt cache write failed', error);
@@ -313,18 +341,44 @@ function qltdGanttCachePut_(projectCode, payload) {
   }
 }
 
-function qltdGanttInvalidateCache_(projectCode) {
+function qltdGanttInvalidateCache_(projectCode, accessContext) {
   try {
     const cache = CacheService.getScriptCache();
-    const baseKey = qltdGanttCacheBaseKey_(projectCode);
-    const manifestText = cache.get(baseKey + '_M');
-    const keys = [baseKey + '_M'];
-    if (manifestText) {
+    const registryKey = qltdGanttCacheRegistryKey_(projectCode);
+    let registeredBaseKeys = [];
+    try {
+      registeredBaseKeys = JSON.parse(cache.get(registryKey) || '[]');
+    } catch (error) {
+      registeredBaseKeys = [];
+    }
+    let baseKeys = [];
+    if (accessContext) {
+      baseKeys = [qltdGanttCacheBaseKey_(projectCode, accessContext)];
+    } else {
+      baseKeys = registeredBaseKeys;
+      if (!baseKeys.length) baseKeys = [qltdGanttCacheBaseKey_(projectCode)];
+    }
+    const keys = [];
+    baseKeys.forEach(function(baseKey) {
+      const manifestText = cache.get(baseKey + '_M');
+      keys.push(baseKey + '_M');
+      if (!manifestText) return;
       const manifest = JSON.parse(manifestText);
       const chunkCount = Math.min(Number(manifest.chunkCount || 0), QLTD_GANTT_CACHE_MAX_CHUNKS);
       for (let index = 0; index < chunkCount; index += 1) keys.push(baseKey + '_C' + index);
-    }
+    });
+    if (!accessContext) keys.push(registryKey);
     cache.removeAll(keys);
+    if (accessContext) {
+      const remainingBaseKeys = registeredBaseKeys.filter(function(baseKey) {
+        return baseKeys.indexOf(baseKey) === -1;
+      });
+      if (remainingBaseKeys.length) {
+        cache.put(registryKey, JSON.stringify(remainingBaseKeys), QLTD_GANTT_CACHE_TTL_SECONDS);
+      } else {
+        cache.remove(registryKey);
+      }
+    }
     return {
       success: true,
       projectCode: String(projectCode || '').trim(),
@@ -338,6 +392,19 @@ function qltdGanttInvalidateCache_(projectCode) {
       message: error && error.message || String(error)
     };
   }
+}
+
+function qltdDashboardCacheAccessContext_(accessContext) {
+  const context = Object.assign({}, accessContext || {});
+  context.context = String(context.context || 'PROJECT_DATA') + '|DASHBOARD_SUMMARY';
+  return context;
+}
+
+function qltdDashboardInvalidateCache_(projectCode, accessContext) {
+  return qltdGanttInvalidateCache_(
+    projectCode,
+    accessContext ? qltdDashboardCacheAccessContext_(accessContext) : null
+  );
 }
 
 function qltdGanttFindSourceSheet_(spreadsheet, project, warnings) {
@@ -411,7 +478,8 @@ function qltdGanttExactRowFields_(row, headerIndex, sourceSheetName) {
   };
 }
 
-function qltdGanttBuildTasks_(values, detected, warnings, sourceSheetName) {
+function qltdGanttBuildTasks_(values, detected, warnings, sourceSheetName, options) {
+  const buildOptions = options || {};
   const tasks = [];
   const duplicateIds = {};
   const headerIndex = detected.headerIndex;
@@ -445,7 +513,9 @@ function qltdGanttBuildTasks_(values, detected, warnings, sourceSheetName) {
     const progress = qltdGanttToProgress_(qltdGanttCell_(row, headerIndex, 'progress'), status);
     const isMilestone = qltdGanttIsMilestone_(qltdGanttCell_(row, headerIndex, 'milestone'), startIso, endIso);
     const parent = String(qltdGanttCell_(row, headerIndex, 'parent') || '0').trim() || '0';
-    const raw = qltdGanttBuildRawRow_(values[detected.rowIndex], row);
+    const raw = buildOptions.contextOnlyRaw
+      ? qltdGanttBuildContextRawRow_(values[detected.rowIndex], row)
+      : qltdGanttBuildRawRow_(values[detected.rowIndex], row);
     const zone = exactRow.zone;
     const hangMuc = exactRow.hangMuc;
     const predecessor = qltdGanttCell_(row, headerIndex, 'predecessor');
@@ -521,6 +591,25 @@ function qltdGanttGetParentWbs_(wbs) {
 function qltdGanttBuildRawRow_(headers, row) {
   const raw = {};
   (headers || []).forEach(function(header, index) {
+    const key = String(header || '').trim() || ('COL_' + (index + 1));
+    const value = row[index];
+    raw[key] = value instanceof Date ? qltdGanttToIsoDate_(value) : value;
+  });
+  return raw;
+}
+
+function qltdGanttBuildContextRawRow_(headers, row) {
+  const raw = {};
+  const contextKeys = {
+    zone: true,
+    loaicongtrinh: true,
+    congtrinh: true,
+    hangmuctang: true,
+    hangmuc: true,
+    wbslevelsys: true
+  };
+  (headers || []).forEach(function(header, index) {
+    if (!contextKeys[qltdGanttNormalizeKey_(header)]) return;
     const key = String(header || '').trim() || ('COL_' + (index + 1));
     const value = row[index];
     raw[key] = value instanceof Date ? qltdGanttToIsoDate_(value) : value;
@@ -686,11 +775,8 @@ function qltdGanttSuccess_(project, sourceSheet, data, links, summary, warnings,
   };
 }
 
-function qltdDashboardGetSummaryForProject_(projectCode) {
-  const source = qltdGanttGetDataForProject_(projectCode);
-  if (!source || source.success === false) return source;
-
-  const data = (source.data || []).map(function(task) {
+function qltdDashboardProjectTasks_(tasks) {
+  return (tasks || []).map(function(task) {
     return {
       id: task.id,
       text: task.text,
@@ -734,14 +820,40 @@ function qltdDashboardGetSummaryForProject_(projectCode) {
       loai_cong_viec: task.loai_cong_viec
     };
   });
+}
+
+function qltdDashboardGetSummaryForProject_(projectCode, accessContext) {
+  const startedAt = Date.now();
+  const code = qltdProjectsNormalizeCode_(projectCode);
+  const cacheContext = qltdDashboardCacheAccessContext_(accessContext);
+  const cached = qltdGanttCacheGet_(code, cacheContext);
+  if (cached) {
+    cached.performance = Object.assign({}, cached.performance || {}, {
+      cacheHit: true,
+      dashboardCache: true,
+      requestDurationMs: Date.now() - startedAt
+    });
+    return cached;
+  }
+
+  const source = qltdGanttBuildDataForProject_(code, startedAt, {
+    includeLinks: false,
+    dashboardProjection: true
+  });
+  if (!source || source.success === false) return source;
+
+  const data = qltdDashboardProjectTasks_(source.data);
   const performance = Object.assign({}, source.performance || {}, {
     recordCount: data.length,
     sourceCount: 1,
+    dashboardCache: false,
     fullGanttTaskCount: (source.data || []).length,
-    fullGanttLinkCount: (source.links || []).length
+    fullGanttLinkCount: 0,
+    linksBuilt: 0,
+    rawRowsReturned: 0
   });
 
-  return {
+  const result = {
     success: true,
     projectCode: source.projectCode,
     projectName: source.projectName,
@@ -752,8 +864,18 @@ function qltdDashboardGetSummaryForProject_(projectCode) {
     generatedAt: performance.generatedAt || new Date().toISOString(),
     performance: performance,
     apiStatus: source.apiStatus,
-    source: 'dashboard_summary_from_gantt'
+    source: 'dashboard_summary_projection'
   };
+  const cacheResult = qltdGanttCachePut_(
+    code,
+    result,
+    cacheContext,
+    QLTD_DASHBOARD_CACHE_TTL_SECONDS
+  );
+  if (cacheResult && cacheResult.warning) {
+    result.warnings = (result.warnings || []).concat([cacheResult.warning]);
+  }
+  return result;
 }
 
 function qltdGanttError_(error, message, warnings, extra) {

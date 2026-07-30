@@ -37,9 +37,10 @@ function qltdSetupUsersSheet() {
 
 // Authentication paths are read-only with respect to schema. Missing sheets or
 // headers fail closed instead of creating or rewriting the Users sheet.
-function qltdUsersEnsureSheet_() {
+function qltdUsersEnsureSheet_(options) {
   let spreadsheet;
   try {
+    if (typeof qltdPerfIncrement_ === 'function') qltdPerfIncrement_('usersSpreadsheetOpens');
     spreadsheet = SpreadsheetApp.openById(QLTD_USERS_SPREADSHEET_ID);
   } catch (error) {
     throw qltdUsersServiceError_('SOURCE_CONFIGURATION_ERROR', 'Không mở được nguồn người dùng trung tâm.');
@@ -48,7 +49,7 @@ function qltdUsersEnsureSheet_() {
   if (!sheet) {
     throw qltdUsersServiceError_('SOURCE_SHEET_NOT_FOUND', 'Không tìm thấy sheet Users.');
   }
-  qltdUsersEnsureHeaders_(sheet);
+  if (!(options && options.skipHeaderValidation)) qltdUsersEnsureHeaders_(sheet);
   return sheet;
 }
 
@@ -67,6 +68,7 @@ function qltdUsersEnsureHeaders_(sheet) {
 
 function qltdUsersHeaderMap_(sheet) {
   const lastColumn = Math.max(Number(sheet.getLastColumn() || 0), QLTD_USERS_HEADERS.length);
+  if (typeof qltdPerfIncrement_ === 'function') qltdPerfIncrement_('sheetRangeReads');
   const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(function(value) {
     return String(value || '').trim();
   });
@@ -78,15 +80,26 @@ function qltdUsersHeaderMap_(sheet) {
 }
 
 function qltdUsersReadAll_() {
-  const sheet = qltdUsersEnsureSheet_();
+  if (typeof qltdPerfMemoHas_ === 'function' && qltdPerfMemoHas_('users', 'all')) {
+    return qltdPerfMemoGet_('users', 'all');
+  }
+  if (typeof qltdPerfIncrement_ === 'function') qltdPerfIncrement_('usersPhysicalReads');
+  const sheet = qltdUsersEnsureSheet_({ skipHeaderValidation: true });
   const headerMap = qltdUsersEnsureHeaders_(sheet);
   const lastRow = sheet.getLastRow();
   const width = Math.max(Number(sheet.getLastColumn() || 0), QLTD_USERS_HEADERS.length);
   if (lastRow < 2) {
-    return { sheet: sheet, headerMap: headerMap, width: width, users: [] };
+    const emptyResult = { sheet: sheet, headerMap: headerMap, width: width, users: [] };
+    return typeof qltdPerfMemoSet_ === 'function'
+      ? qltdPerfMemoSet_('users', 'all', emptyResult)
+      : emptyResult;
+  }
+  if (typeof qltdPerfIncrement_ === 'function') {
+    qltdPerfIncrement_('sheetRangeReads');
+    qltdPerfIncrement_('usersRowsRead', lastRow - 1);
   }
   const values = sheet.getRange(2, 1, lastRow - 1, width).getValues();
-  return {
+  const result = {
     sheet: sheet,
     headerMap: headerMap,
     width: width,
@@ -96,6 +109,9 @@ function qltdUsersReadAll_() {
       return !!(user.email || user.empCode);
     })
   };
+  return typeof qltdPerfMemoSet_ === 'function'
+    ? qltdPerfMemoSet_('users', 'all', result)
+    : result;
 }
 
 function qltdUsersParseRow_(row, rowIndex, headerMap) {

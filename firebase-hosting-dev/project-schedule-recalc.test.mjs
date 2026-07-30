@@ -38,13 +38,14 @@ assert.match(scheduleControlRefresh, /bindProjectScheduleRecalculateButton\(code
 assert.doesNotMatch(scheduleControlRefresh, /resetWeb07DhtmlxGantt|renderGanttPanel|clearAll/);
 
 const viewLifecycle = extractFunction(appSource, 'showWeb07View', 'bindWeb07Navigation');
-assert.match(viewLifecycle, /ganttLoadStarted/);
+assert.match(viewLifecycle, /viewName === 'gantt' && !options\.skipDataLoad/);
 assert.match(viewLifecycle, /viewLoadPromise = loadGanttDataForSelectedProject\(projectCode\)/);
+assert.match(viewLifecycle, /viewName === 'dashboard'[\s\S]*loadDashboardSummaryForSelectedProject\(projectCode\)/);
 assert.doesNotMatch(viewLifecycle, /setTimeout\(/, 'Gantt activation must not rely on an arbitrary render timeout.');
 
 const loadGantt = extractFunction(appSource, 'qltdWeb07LoadGanttDataForSelectedProject', 'renderDashboardLoading');
 assert.match(loadGantt, /loadProjectScheduleState\(projectCode,\s*\{\s*render:\s*false\s*\}\)/);
-assert.match(loadGantt, /await scheduleStateRequest/);
+assert.doesNotMatch(loadGantt, /await scheduleStateRequest/, 'Schedule state must not block the first Gantt render.');
 assert.match(
   loadGantt,
   /await loadMainMilestonesForProject\(projectCode,\s*payload\);\s*if \(!qltdWeb07IsCurrentGanttLoad\(projectCode,\s*requestSeq\)\) return payload;/,

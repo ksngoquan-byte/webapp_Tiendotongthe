@@ -61,6 +61,20 @@ function qltdProjectsEnsureHeaders_(sheet) {
   }
 }
 
+function qltdProjectsReadSheet_() {
+  const sheet = getCurrentSpreadsheet_().getSheetByName(QLTD_PROJECTS_SHEET_NAME);
+  if (!sheet) throw new Error('PROJECTS_SHEET_NOT_FOUND');
+  if (typeof qltdPerfIncrement_ === 'function') qltdPerfIncrement_('sheetRangeReads');
+  const currentHeaders = sheet.getRange(1, 1, 1, QLTD_PROJECTS_HEADERS.length)
+    .getDisplayValues()[0]
+    .map(function(value) { return String(value || '').trim(); });
+  const valid = QLTD_PROJECTS_HEADERS.every(function(header, index) {
+    return currentHeaders[index] === header;
+  });
+  if (!valid) throw new Error('PROJECTS_HEADER_MISMATCH');
+  return sheet;
+}
+
 function qltdProjectsSeedDefaultIfMissing_() {
   const sheet = qltdProjectsEnsureSheet_();
   const existing = qltdProjectsFindRowByCode_(QLTD_PROJECTS_DEFAULT_NAM_CAM.projectCode);
@@ -126,29 +140,39 @@ function qltdProjectsListActive_() {
     .sort(qltdProjectsSort_);
 }
 
-function qltdProjectsListForUser_(email) {
+function qltdProjectsListForUser_(email, resolvedUser) {
   const normalizedEmail = qltdUsersNormalizeEmail_(email);
-  const user = normalizedEmail ? qltdUsersGetByEmail_(normalizedEmail) : null;
+  const user = resolvedUser || (normalizedEmail ? qltdUsersGetByEmail_(normalizedEmail) : null);
   if (!user || user.status !== 'ACTIVE' || !qltdUsersIsValidRole_(user.role)) return [];
   return qltdProjectsListActive_();
 }
 
 function qltdProjectsListAll_() {
-  qltdProjectsEnsureSheet_();
-  qltdProjectsSeedDefaultIfMissing_();
   return qltdProjectsListAllRaw_();
 }
 
 function qltdProjectsListAllRaw_() {
-  const sheet = qltdProjectsEnsureSheet_();
+  if (typeof qltdPerfMemoHas_ === 'function' && qltdPerfMemoHas_('projects', 'all')) {
+    return qltdPerfMemoGet_('projects', 'all');
+  }
+  if (typeof qltdPerfIncrement_ === 'function') qltdPerfIncrement_('projectsPhysicalReads');
+  const sheet = qltdProjectsReadSheet_();
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return [];
+  if (lastRow < 2) {
+    return typeof qltdPerfMemoSet_ === 'function'
+      ? qltdPerfMemoSet_('projects', 'all', [])
+      : [];
+  }
 
+  if (typeof qltdPerfIncrement_ === 'function') {
+    qltdPerfIncrement_('sheetRangeReads');
+    qltdPerfIncrement_('projectsRowsRead', lastRow - 1);
+  }
   const values = sheet
     .getRange(2, 1, lastRow - 1, QLTD_PROJECTS_HEADERS.length)
     .getValues();
 
-  return values
+  const projects = values
     .map(function(row, index) {
       return {
         rowIndex: index + 2,
@@ -166,6 +190,9 @@ function qltdProjectsListAllRaw_() {
     .filter(function(project) {
       return !!project.projectCode && !!project.projectName;
     });
+  return typeof qltdPerfMemoSet_ === 'function'
+    ? qltdPerfMemoSet_('projects', 'all', projects)
+    : projects;
 }
 
 function qltdProjectsSort_(a, b) {

@@ -21,7 +21,11 @@ function extractFunction(name) {
 }
 
 const context = vm.createContext({
-  qltdGanttGetDataForProject_: () => ({
+  Date,
+  QLTD_DASHBOARD_CACHE_TTL_SECONDS: 60,
+  qltdProjectsNormalizeCode_: (value) => String(value || '').trim().toUpperCase(),
+  qltdGanttCacheGet_: () => null,
+  qltdGanttBuildDataForProject_: () => ({
     success: true,
     projectCode: '37-5.HL',
     data: [{
@@ -39,8 +43,11 @@ const context = vm.createContext({
     }],
     links: [],
     performance: {}
-  })
+  }),
+  qltdGanttCachePut_: () => ({ stored: true })
 });
+vm.runInContext(extractFunction('qltdDashboardCacheAccessContext_'), context);
+vm.runInContext(extractFunction('qltdDashboardProjectTasks_'), context);
 vm.runInContext(extractFunction('qltdDashboardGetSummaryForProject_'), context);
 
 const result = context.qltdDashboardGetSummaryForProject_('37-5.HL');

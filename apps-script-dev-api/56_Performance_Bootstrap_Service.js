@@ -8,17 +8,23 @@ function qltdDevApiBootstrap_(params) {
     email: user.email
   };
 
-  qltdProjectsEnsureSheet_();
-  qltdProjectsSeedDefaultIfMissing_();
-  const projects = qltdProjectsListForUser_(user.email).map(function(project) {
-    return {
-      projectCode: project.projectCode,
-      projectName: project.projectName,
-      defaultTaskSheet: project.defaultTaskSheet,
-      defaultDeptSheet: project.defaultDeptSheet,
-      sortOrder: project.sortOrder || ''
-    };
-  });
+  let projects;
+  try {
+    projects = qltdProjectsListForUser_(user.email, user).map(function(project) {
+      return {
+        projectCode: project.projectCode,
+        projectName: project.projectName,
+        defaultTaskSheet: project.defaultTaskSheet,
+        defaultDeptSheet: project.defaultDeptSheet,
+        sortOrder: project.sortOrder || ''
+      };
+    });
+  } catch (error) {
+    return qltdUsersBuildAuthError_(
+      'SOURCE_CONFIGURATION_ERROR',
+      'Cấu hình nguồn dự án không hợp lệ.'
+    );
+  }
 
   return {
     success: true,

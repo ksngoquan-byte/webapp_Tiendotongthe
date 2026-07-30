@@ -329,11 +329,11 @@ assert.match(apiSource, /qltdUsersLookupEmployees_\(payload\)/);
 assert.match(apiSource, /qltdUsersRegister_\(payload\)/);
 assert.match(apiSource, /resolveCurrentUser_\(params\)/);
 assert.match(appSource, /code === 'USER_NOT_REGISTERED'/);
-assert.match(appSource, /profile\.requiresRegistration === true/);
+assert.match(appSource, /failedPayload\?\.requiresRegistration === true/);
 assert.match(appSource, /getIdToken\(forceRefresh\)/);
 
-// The existing profile-through-bootstrap read-cache adapter must preserve the
-// verified identity parameters now that bootstrap requires a Firebase token.
+// Explicit bootstrap must preserve verified identity parameters without a
+// profile/listProjects compatibility request on the critical path.
 const forwardedReadUrls = [];
 const readCacheTarget = {
   fetch: async (input) => {
@@ -346,13 +346,14 @@ const readCacheTarget = {
   }
 };
 installApiReadCache(readCacheTarget);
-const legacyProfileResponse = await readCacheTarget.fetch(
-  'https://script.google.com/macros/s/test/exec?action=profile&email=legacy%40example.com&idToken=verified-token'
+const bootstrapResponse = await readCacheTarget.fetch(
+  'https://script.google.com/macros/s/test/exec?action=bootstrap&email=legacy%40example.com&idToken=verified-token'
 );
 const forwardedBootstrapUrl = new URL(forwardedReadUrls[0]);
 assert.equal(forwardedBootstrapUrl.searchParams.get('action'), 'bootstrap');
 assert.equal(forwardedBootstrapUrl.searchParams.get('email'), 'legacy@example.com');
 assert.equal(forwardedBootstrapUrl.searchParams.get('idToken'), 'verified-token');
-assert.equal((await legacyProfileResponse.json()).email, 'legacy@example.com');
+assert.equal((await bootstrapResponse.json()).profile.email, 'legacy@example.com');
+assert.equal(forwardedReadUrls.length, 1);
 
 console.log('Controlled auth/registration flow tests: PASS');

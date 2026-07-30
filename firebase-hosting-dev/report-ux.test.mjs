@@ -986,6 +986,7 @@ function createWeeklySaveContext({ postResult, postError = null, verified = null
     currentUserProfile: { email: 'user@example.com', role },
     normalizeRoleKey: (value) => String(value || '').trim().toUpperCase(),
     qltdGanttDirtyProjects: new Set(),
+    qltdInvalidateDashboardCacheForProject: () => {},
     document: { getElementById: (id) => inputs[id] || null },
     window: { confirm: () => true },
     validateWeeklyTaskForm: () => ({ error: '', progressEnd: 30, status: 'Đang thực hiện', dates: { actualStart: '', actualFinish: '', actualStartEdit: '', actualFinishEdit: '' } }),
@@ -1145,11 +1146,15 @@ assert.equal(localApplyContext.qltdWeeklyTaskView.updates[1].progressEnd, 65);
 
 const ganttDirtyContext = {
   qltdGanttDirtyProjects: new Set(),
+  qltdGanttForceRefreshProjects: new Set(),
   qltdActiveView: 'report',
   loadCount: 0,
+  dashboardLoadCount: 0,
   document: { getElementById: () => ({ value: 'P1' }) },
   getStoredProjectCode: () => '',
-  loadGanttDataForSelectedProject: async () => { ganttDirtyContext.loadCount += 1; }
+  qltdInvalidateDashboardCacheForProject: () => {},
+  loadGanttDataForSelectedProject: async () => { ganttDirtyContext.loadCount += 1; },
+  loadDashboardSummaryForSelectedProject: async () => { ganttDirtyContext.dashboardLoadCount += 1; }
 };
 vm.createContext(ganttDirtyContext);
 const markGanttDirtySource = app.slice(app.indexOf('function markWeeklyGanttRefreshRequired'), app.indexOf('function qltdWeb07GetOrCreateGanttRequest'));
@@ -1162,9 +1167,13 @@ await ganttDirtyContext.markWeeklyGanttRefreshRequired('P1');
 assert.equal(ganttDirtyContext.loadCount, 1);
 await ganttDirtyContext.markWeeklyGanttRefreshRequired('P2');
 assert.equal(ganttDirtyContext.loadCount, 1);
+ganttDirtyContext.qltdActiveView = 'dashboard';
+await ganttDirtyContext.markWeeklyGanttRefreshRequired('P1');
+assert.equal(ganttDirtyContext.dashboardLoadCount, 1);
 const showViewSource = latestFunction('showWeb07View', 'bindWeb07Navigation');
 assert.match(showViewSource, /qltdGanttDirtyProjects\.has\(projectCode\)/);
-assert.match(showViewSource, /viewName === 'dashboard' \|\| viewName === 'gantt'/);
+assert.match(showViewSource, /viewName === 'dashboard'[\s\S]*loadDashboardSummaryForSelectedProject/);
+assert.match(showViewSource, /viewName === 'gantt'[\s\S]*loadGanttDataForSelectedProject/);
 const ganttLoaderSource = app.slice(app.indexOf('async function qltdWeb07LoadGanttDataForSelectedProject'), app.indexOf('function renderDashboardLoading'));
 assert.match(ganttLoaderSource, /qltdGanttDirtyProjects\.delete\(projectCode\)/);
 assert.ok(ganttLoaderSource.indexOf('qltdGanttDirtyProjects.delete(projectCode)') < ganttLoaderSource.indexOf('} catch (error)'));

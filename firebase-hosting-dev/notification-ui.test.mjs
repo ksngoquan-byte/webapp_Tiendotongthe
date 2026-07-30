@@ -190,7 +190,10 @@ assert.match(loadSource, /\{ auth: true \}/);
 assert.match(loadSource, /qltdNotificationLoadPromise/);
 assert.match(loadSource, /notifications: \[\]/);
 const renderAppSource = extractFunction(app, 'renderApp');
-assert.match(renderAppSource, /void loadNotifications\(\)/);
+assert.doesNotMatch(renderAppSource, /loadNotifications\(\)|notifications_list/);
+assert.match(extractFunction(app, 'scheduleNotificationSummaryAfterDashboard'), /requestIdleCallback/);
+assert.match(extractFunction(app, 'loadNotificationSummary'), /notifications_summary/);
+assert.match(extractFunction(app, 'setNotificationPanelOpen'), /if \(open\) loadNotifications\(\)/);
 
 const approvalDeepLink = extractFunction(app, 'navigateNotificationApproval');
 assert.match(approvalDeepLink, /selectNotificationProject/);

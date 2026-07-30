@@ -386,7 +386,8 @@ test('ganttData fetch passes AbortController signal and auto-load is view scoped
   const fetchSource = extractFunction(appSource, 'fetchBackendJson');
   assert.match(fetchSource, /signal: options\.signal/);
   const projectOptionsSource = extractFunction(appSource, 'renderProjectOptions');
-  assert.match(projectOptionsSource, /qltdActiveView === 'dashboard' \|\| qltdActiveView === 'gantt'/);
+  assert.match(projectOptionsSource, /qltdActiveView === 'dashboard'\) loadDashboardSummaryForSelectedProject/);
+  assert.match(projectOptionsSource, /qltdActiveView === 'gantt'\) loadGanttDataForSelectedProject/);
 });
 
 test('loader protects current project from stale success and stale error rendering', () => {
@@ -432,7 +433,7 @@ test('main milestone loader rejects a stale project response before state/cache 
       else if (params.projectCode === 'B') resolveB = resolve;
     }),
     cacheMainMilestonesForProject: (projectKey) => cached.push(projectKey),
-    hasMainMilestoneApiSource: () => true,
+    hasMainMilestoneApiSource: (payload) => payload?.mainMilestoneSource === 'GOOGLE_SHEET',
     getDoc: () => { throw new Error('Firestore must not be reached'); },
     getMainMilestoneDocRef: () => null
   };
@@ -451,13 +452,11 @@ test('main milestone loader rejects a stale project response before state/cache 
 
   const loadA = milestoneContext.loadMainMilestones('A', {
     projectCode: 'A',
-    data: [{ id: '1' }],
-    mainMilestoneIds: ['A|UID:1']
+    data: [{ id: '1' }]
   });
   const loadB = milestoneContext.loadMainMilestones('B', {
     projectCode: 'B',
-    data: [{ id: '2' }],
-    mainMilestoneIds: ['B|UID:2']
+    data: [{ id: '2' }]
   });
 
   assert.equal(typeof resolveA, 'function');
@@ -471,8 +470,8 @@ test('main milestone loader rejects a stale project response before state/cache 
   assert.deepEqual(
     applied.map(({ projectKey, source }) => [projectKey, source]),
     [
-      ['A', 'GANTT_PAYLOAD'],
-      ['B', 'GANTT_PAYLOAD'],
+      ['A', 'LOCAL_STORAGE'],
+      ['B', 'LOCAL_STORAGE'],
       ['B', 'APPS_SCRIPT_API']
     ]
   );
@@ -669,11 +668,11 @@ test('all frontend ganttData physical calls go through the shared coordinator', 
   assert.equal((appSource.match(/fetchBackendJson\s*\(\s*['"]ganttData['"]/g) || []).length, 0);
   assert.equal((appSource.match(/fetcher\s*\(\s*['"]ganttData['"]/g) || []).length, 1);
   const departmentSource = extractFunction(appSource, 'getDepartmentDashboardPayloads');
-  assert.match(departmentSource, /qltdWeb07RequestGanttPayload\(code/);
+  assert.match(departmentSource, /qltdRequestDashboardSummary\(code/);
   assert.doesNotMatch(departmentSource, /fetchBackendJson\s*\(/);
 });
 
-test('department dashboard A/B/C uses the physical lane, preserves cache, and continues after error', async () => {
+test('department dashboard A/B/C uses summary requests, preserves cache, and continues after error', async () => {
   let activeRequests = 0;
   let maxActiveRequests = 0;
   const requested = [];
@@ -689,25 +688,59 @@ test('department dashboard A/B/C uses the physical lane, preserves cache, and co
     window: { setTimeout, clearTimeout },
     qltdProjectRegistry: ['A', 'B', 'C'].map((projectCode) => ({ projectCode })),
     qltdDepartmentDashboardCache: new Map(),
-    fetchBackendJson: async (_action, params) => {
-      requested.push(params.projectCode);
+    qltdRequestDashboardSummary: async (projectCode) => {
+      requested.push(projectCode);
       activeRequests += 1;
       maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
       await Promise.resolve();
       activeRequests -= 1;
-      if (params.projectCode === 'B') throw new Error('B failed');
-      return { success: true, projectCode: params.projectCode, data: [] };
+      if (projectCode === 'B') throw new Error('B failed');
+      return { success: true, projectCode, data: [] };
     }
   };
   vm.createContext(dashboardContext);
-  vm.runInContext(`${helpersSource}\n${extractFunction(appSource, 'getDepartmentDashboardPayloads')}\nthis.runDashboard = getDepartmentDashboardPayloads;`, dashboardContext);
+  vm.runInContext(`${extractFunction(appSource, 'getDepartmentDashboardPayloads')}\nthis.runDashboard = getDepartmentDashboardPayloads;`, dashboardContext);
 
   const result = await dashboardContext.runDashboard('', false);
   assert.deepEqual(requested, ['A', 'B', 'C']);
-  assert.equal(maxActiveRequests, 1);
+  assert.equal(maxActiveRequests, 3);
   assert.deepEqual(Array.from(dashboardContext.qltdDepartmentDashboardCache.keys()), ['A', 'C']);
   assert.equal(result.payloads.length, 2);
   assert.equal(result.warnings.length, 1);
+
+  requested.length = 0;
+  const selectedResult = await dashboardContext.runDashboard('A', true);
+  assert.deepEqual(requested, ['A']);
+  assert.equal(selectedResult.payloads.length, 1);
+});
+
+test('department detail dashboard requests only the selected project and department', async () => {
+  const requests = [];
+  const dashboardContext = {
+    Map,
+    Promise,
+    String,
+    qltdProjectRegistry: ['A', 'B'].map((projectCode) => ({ projectCode })),
+    qltdDepartmentDashboardDetailCache: new Map(),
+    fetchBackendJson: async (action, params) => {
+      requests.push({ action, params });
+      return { success: true, projectCode: params.projectCode, departments: [] };
+    }
+  };
+  vm.createContext(dashboardContext);
+  vm.runInContext(
+    `${extractFunction(appSource, 'getDepartmentDashboardDetailPayloads')}
+     this.runDetails = getDepartmentDashboardDetailPayloads;`,
+    dashboardContext
+  );
+
+  const result = await dashboardContext.runDetails('B', 'PTDA', false);
+  assert.deepEqual(JSON.parse(JSON.stringify(requests)), [{
+    action: 'listDeptPlans',
+    params: { projectCode: 'B', deptCode: 'PTDA' }
+  }]);
+  assert.equal(result.payloads.length, 1);
+  assert.equal(result.warnings.length, 0);
 });
 
 test('terminal error exposes one Retry handler through the current project coordinator', () => {

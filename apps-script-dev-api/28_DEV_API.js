@@ -12,6 +12,7 @@ const QLTD_DEV_DEPT_READ_ACTIONS = {
   weekly_masterapprovals_get: true,
   weekly_pbdetailapprovals_get: true,
   notifications_list: true,
+  notifications_summary: true,
   weekly_getmyreports: true,
   weekly_getdeptreports: true,
   listdeptplans: true
@@ -155,6 +156,10 @@ function qltdDevApiHandleGet(e) {
 
   if (action === 'notifications_list') {
     return qltdDevApiJson_(qltdNotificationsList_(params));
+  }
+
+  if (action === 'notifications_summary') {
+    return qltdDevApiJson_(qltdNotificationsSummary_(params));
   }
 
   if (action === 'work_listassignees') {
@@ -447,18 +452,23 @@ function qltdDevApiListProjects_(params) {
   if (!resolution.success) return qltdDevApiJson_(resolution);
   const user = resolution.user;
 
-  qltdProjectsEnsureSheet_();
-  qltdProjectsSeedDefaultIfMissing_();
-
-  const projects = qltdProjectsListForUser_(user.email).map(function(project) {
-    return {
-      projectCode: project.projectCode,
-      projectName: project.projectName,
-      defaultTaskSheet: project.defaultTaskSheet,
-      defaultDeptSheet: project.defaultDeptSheet,
-      sortOrder: project.sortOrder || ''
-    };
-  });
+  let projects;
+  try {
+    projects = qltdProjectsListForUser_(user.email, user).map(function(project) {
+      return {
+        projectCode: project.projectCode,
+        projectName: project.projectName,
+        defaultTaskSheet: project.defaultTaskSheet,
+        defaultDeptSheet: project.defaultDeptSheet,
+        sortOrder: project.sortOrder || ''
+      };
+    });
+  } catch (error) {
+    return qltdDevApiJson_(qltdUsersBuildAuthError_(
+      'SOURCE_CONFIGURATION_ERROR',
+      'Cấu hình nguồn dự án không hợp lệ.'
+    ));
+  }
 
   return qltdDevApiJson_({
     success: true,
@@ -481,11 +491,31 @@ function qltdDevApiListDeptPlans_(params) {
 
 function qltdDevApiGanttData_(params) {
   const projectCode = params && params.projectCode;
+  const resolution = resolveCurrentUser_(params);
+  if (!resolution.success) return qltdDevApiJson_(resolution);
+  const user = resolution.user;
+  let allowed = false;
+  try {
+    allowed = qltdProjectsListForUser_(user.email, user).some(function(project) {
+      return qltdProjectsNormalizeCode_(project.projectCode) === qltdProjectsNormalizeCode_(projectCode);
+    });
+  } catch (error) {
+    return qltdDevApiJson_(qltdUsersBuildAuthError_('SOURCE_CONFIGURATION_ERROR', 'Cấu hình nguồn dự án không hợp lệ.'));
+  }
+  if (!allowed) {
+    return qltdDevApiJson_(qltdUsersBuildAuthError_('ACCESS_DENIED', 'Bạn không có quyền truy cập dự án này.'));
+  }
+  const accessContext = {
+    email: user.email,
+    role: user.role,
+    deptCode: user.deptCode,
+    context: 'PROJECT_DATA'
+  };
   const forceRefresh = String(params && (params.forceRefresh || params.bypassCache) || '').trim() === '1' ||
     String(params && (params.forceRefresh || params.bypassCache) || '').trim().toLowerCase() === 'true';
   if (forceRefresh && typeof qltdGanttInvalidateCache_ === 'function') {
     try {
-      qltdGanttInvalidateCache_(projectCode);
+      qltdGanttInvalidateCache_(projectCode, accessContext);
     } catch (error) {
       Logger.log(JSON.stringify({
         action: 'ganttData',
@@ -495,7 +525,7 @@ function qltdDevApiGanttData_(params) {
       }));
     }
   }
-  const result = qltdGanttGetDataForProject_(projectCode);
+  const result = qltdGanttGetDataForProject_(projectCode, accessContext);
   if (result && result.success !== false) {
     const milestones = qltdMainMilestonesGet_(projectCode, 'gantt-data@authenticated.local', true);
     result.mainMilestoneSource = 'GOOGLE_SHEET';
@@ -507,17 +537,31 @@ function qltdDevApiGanttData_(params) {
 
 function qltdDevApiDashboardSummary_(params) {
   const projectCode = params && params.projectCode;
+  const resolution = resolveCurrentUser_(params);
+  if (!resolution.success) return qltdDevApiJson_(resolution);
+  const user = resolution.user;
+  let allowed = false;
+  try {
+    allowed = qltdProjectsListForUser_(user.email, user).some(function(project) {
+      return qltdProjectsNormalizeCode_(project.projectCode) === qltdProjectsNormalizeCode_(projectCode);
+    });
+  } catch (error) {
+    return qltdDevApiJson_(qltdUsersBuildAuthError_('SOURCE_CONFIGURATION_ERROR', 'Cấu hình nguồn dự án không hợp lệ.'));
+  }
+  if (!allowed) {
+    return qltdDevApiJson_(qltdUsersBuildAuthError_('ACCESS_DENIED', 'Bạn không có quyền truy cập dự án này.'));
+  }
+  const accessContext = {
+    email: user.email,
+    role: user.role,
+    deptCode: user.deptCode,
+    context: 'PROJECT_DATA'
+  };
   const forceRefresh = String(params && (params.forceRefresh || params.bypassCache) || '').trim() === '1' ||
     String(params && (params.forceRefresh || params.bypassCache) || '').trim().toLowerCase() === 'true';
-  if (forceRefresh && typeof qltdGanttInvalidateCache_ === 'function') {
-    qltdGanttInvalidateCache_(projectCode);
+  if (forceRefresh && typeof qltdDashboardInvalidateCache_ === 'function') {
+    qltdDashboardInvalidateCache_(projectCode, accessContext);
   }
-  const result = qltdDashboardGetSummaryForProject_(projectCode);
-  if (result && result.success !== false) {
-    const milestones = qltdMainMilestonesGet_(projectCode, 'dashboard-summary@authenticated.local', true);
-    result.mainMilestoneSource = 'GOOGLE_SHEET';
-    result.mainMilestoneIds = milestones.ids || [];
-    result.mainMilestoneCodes = milestones.codes || [];
-  }
+  const result = qltdDashboardGetSummaryForProject_(projectCode, accessContext);
   return qltdDevApiJson_(result);
 }

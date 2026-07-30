@@ -191,15 +191,16 @@ assert.match(appSource, /user_lookupemployees/);
 assert.match(appSource, /postBackendJson\(\{ action: 'user_register', empCode \}\)/);
 assert.match(appSource, /onRegistered:\s*resumeAuthenticatedAppAfterRegistration/);
 assert.doesNotMatch(appSource, /user_getregistrationoptions|GUEST_VIEWER/);
-assert.match(appSource, /code === 'USER_NOT_REGISTERED'[\s\S]*code === 'USER_NOT_FOUND'[\s\S]*profile\.requiresRegistration === true/);
+assert.match(appSource, /code === 'USER_NOT_REGISTERED'[\s\S]*code === 'USER_NOT_FOUND'[\s\S]*failedPayload\?\.requiresRegistration === true/);
 assert.match(appSource, /registrationGate\?\.show\(user\)/);
 assert.match(extractFunction(appSource, 'fetchBackendJson'), /const includeAuth = options\.auth !== false && action !== 'health'/);
 assert.match(extractFunction(appSource, 'fetchBackendJson'), /getIdToken\(forceRefresh\)/);
 assert.match(extractFunction(appSource, 'fetchBackendJson'), /ID_TOKEN_INVALID/);
 assert.match(extractFunction(appSource, 'postBackendJson'), /getIdToken\(forceRefresh\)/);
 assert.match(extractFunction(appSource, 'loadProjectsForSelector'), /fetchBackendJson\('listProjects',[\s\S]*\{ auth: true \}/);
-assert.match(extractFunction(appSource, 'renderApp'), /showWeb07View\('dashboard'\)/);
-assert.match(extractFunction(appSource, 'renderApp'), /loadProjectsForSelector\(\)/);
+assert.match(extractFunction(appSource, 'renderApp'), /showWeb07View\('dashboard', \{ skipDataLoad: true \}\)/);
+assert.match(extractFunction(appSource, 'renderApp'), /renderProjectOptions\(Array\.isArray\(projects\)/);
+assert.doesNotMatch(extractFunction(appSource, 'renderApp'), /loadProjectsForSelector\(\)|loadNotifications\(\)/);
 
 const renderedUserName = { textContent: '' };
 const renderAppContext = vm.createContext({
@@ -219,13 +220,13 @@ const renderAppContext = vm.createContext({
   ensureWeb07Panels() {},
   bindWeb07Navigation() {},
   showWeb07View() {},
-  loadProjectsForSelector: () => Promise.resolve(),
-  loadNotifications: () => Promise.resolve(),
+  qltdProjectRegistry: [],
+  renderProjectOptions: (projects) => { renderAppContext.qltdProjectRegistry = projects; },
   setApiStatus() {}
 });
 vm.runInContext(extractFunction(appSource, 'renderApp'), renderAppContext);
 const firebaseUser = { email: 'user@example.com', displayName: 'Firebase Name', photoURL: '' };
-renderAppContext.renderApp(firebaseUser, 'EDITOR', { displayName: 'Users Sheet Name', role: 'EDITOR', apiStatus: 'CONNECTED' });
+renderAppContext.renderApp(firebaseUser, 'EDITOR', { displayName: 'Users Sheet Name', role: 'EDITOR', apiStatus: 'CONNECTED' }, [{ projectCode: 'P1' }]);
 assert.equal(renderedUserName.textContent, 'Users Sheet Name');
 renderAppContext.renderApp(firebaseUser, 'EDITOR', { displayName: '', role: 'EDITOR', apiStatus: 'CONNECTED' });
 assert.equal(renderedUserName.textContent, 'Firebase Name');
@@ -250,14 +251,18 @@ await postRegistrationContext.resumeAuthenticatedAppAfterRegistration();
 assert.deepEqual(postRegistrationTrace, ['token:true', 'hide', 'bootstrap']);
 
 const authFlowTrace = [];
-let nextProfile = { success: true, status: 'ACTIVE', role: 'PMO', email: 'existing@example.com' };
+let nextBootstrap = {
+  success: true,
+  profile: { success: true, status: 'ACTIVE', role: 'PMO', email: 'existing@example.com' },
+  projects: [{ projectCode: 'P1' }]
+};
 const authFlowContext = vm.createContext({
   authBootstrapRequestSeq: 0,
   lastAuthenticatedUser: null,
   els: { loginView: {} },
   showOnly: () => {},
   setStatus: () => {},
-  fetchBackendProfile: async () => nextProfile,
+  fetchBackendBootstrap: async () => nextBootstrap,
   getProfileErrorCode: (profile) => String(profile?.errorCode || profile?.message || '').toUpperCase(),
   registrationGate: { show: () => authFlowTrace.push('registration-gate') },
   renderDenied: () => authFlowTrace.push('denied'),
@@ -270,11 +275,15 @@ const existingUser = { email: 'existing@example.com' };
 await authFlowContext.bootstrapAuthenticatedUser(existingUser);
 assert.deepEqual(authFlowTrace, ['app'], 'existing user must enter the shared app bootstrap');
 
-nextProfile = { success: false, errorCode: 'USER_NOT_FOUND', requiresRegistration: true };
+nextBootstrap = { success: false, errorCode: 'USER_NOT_FOUND', requiresRegistration: true };
 await authFlowContext.bootstrapAuthenticatedUser({ email: 'new@example.com' });
 assert.deepEqual(authFlowTrace, ['app', 'registration-gate'], 'new user must stop at Registration Gate before registration');
 
-nextProfile = { success: true, status: 'ACTIVE', role: 'PMO', email: 'new@example.com' };
+nextBootstrap = {
+  success: true,
+  profile: { success: true, status: 'ACTIVE', role: 'PMO', email: 'new@example.com' },
+  projects: [{ projectCode: 'P1' }]
+};
 await authFlowContext.bootstrapAuthenticatedUser({ email: 'new@example.com' });
 assert.deepEqual(authFlowTrace, ['app', 'registration-gate', 'app'], 'a reload after registration must enter the app without reopening the Gate');
 

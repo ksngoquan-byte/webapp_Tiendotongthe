@@ -5,8 +5,42 @@ function qltdPerfStartRequest_(action, params) {
     action: String(action || 'unknown').trim() || 'unknown',
     requestId: Utilities.getUuid(),
     startedAt: Date.now(),
-    debug: String(params && params.debugPerf || '').trim() === '1'
+    debug: String(params && params.debugPerf || '').trim() === '1',
+    memo: {},
+    counters: {}
   };
+}
+
+function qltdPerfMemoHas_(namespace, key) {
+  if (!QLTD_PERF_REQUEST_CONTEXT_) return false;
+  const bucket = QLTD_PERF_REQUEST_CONTEXT_.memo[String(namespace || '')];
+  return !!bucket && Object.prototype.hasOwnProperty.call(bucket, String(key || ''));
+}
+
+function qltdPerfMemoGet_(namespace, key) {
+  if (!qltdPerfMemoHas_(namespace, key)) return null;
+  return QLTD_PERF_REQUEST_CONTEXT_.memo[String(namespace || '')][String(key || '')];
+}
+
+function qltdPerfMemoSet_(namespace, key, value) {
+  if (!QLTD_PERF_REQUEST_CONTEXT_) return value;
+  const namespaceKey = String(namespace || '');
+  const memoKey = String(key || '');
+  if (!QLTD_PERF_REQUEST_CONTEXT_.memo[namespaceKey]) {
+    QLTD_PERF_REQUEST_CONTEXT_.memo[namespaceKey] = {};
+  }
+  QLTD_PERF_REQUEST_CONTEXT_.memo[namespaceKey][memoKey] = value;
+  return value;
+}
+
+function qltdPerfIncrement_(metric, amount) {
+  if (!QLTD_PERF_REQUEST_CONTEXT_) return 0;
+  const key = String(metric || '').trim();
+  if (!key) return 0;
+  const increment = isFinite(Number(amount)) ? Number(amount) : 1;
+  const current = Number(QLTD_PERF_REQUEST_CONTEXT_.counters[key] || 0);
+  QLTD_PERF_REQUEST_CONTEXT_.counters[key] = current + increment;
+  return QLTD_PERF_REQUEST_CONTEXT_.counters[key];
 }
 
 function qltdPerfAttach_(payload) {
@@ -25,7 +59,8 @@ function qltdPerfAttach_(payload) {
     rowsRead: rowsRead,
     cellsRead: Number(existing.cellsRead || (rowsRead && columnsRead ? rowsRead * columnsRead : 0)),
     recordCount: qltdPerfRecordCount_(payload),
-    cacheHit: !!existing.cacheHit
+    cacheHit: !!existing.cacheHit,
+    counters: Object.assign({}, context.counters)
   });
 
   payload.performance = performance;
