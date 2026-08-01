@@ -443,7 +443,8 @@ assert.deepEqual(
   {
     projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'CV-CUMULATIVE',
     currentProgress: 80, currentWeekProgress: 80, effectiveProgress: 80, previousProgress: null, progressDelta: null,
-    hasCurrentWeekUpdate: true, latestUpdateWeek: 'WEEK-2026-06-29', latestUpdatedWeek: 'WEEK-2026-06-29', latestUpdatedAt: '2026-06-20T00:00:00.000Z'
+    hasCurrentWeekUpdate: true, latestUpdateWeek: 'WEEK-2026-06-29', latestUpdatedWeek: 'WEEK-2026-06-29', latestUpdatedAt: '2026-06-20T00:00:00.000Z',
+    effectiveTaskStatus: 'Đang làm', effectiveApprovalStatus: '', effectiveUpdateId: 'WTU_UUID-4', effectiveRowNumber: 5
   }
 );
 const week28Inherited = get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'thietke', weekCode: 'WEEK-2026-07-06', itemType: 'MASTER', itemId: 'CV-CUMULATIVE' });
@@ -477,6 +478,25 @@ assert.equal(isolatedStates.length, 3);
 assert.equal(isolatedStates.find((state) => state.projectCode === '37-5.HL' && state.itemId === 'SAME-NAME-A').effectiveProgress, 30);
 assert.equal(isolatedStates.find((state) => state.projectCode === '37-5.HL' && state.itemId === 'SAME-NAME-B').effectiveProgress, 40);
 assert.equal(isolatedStates.find((state) => state.projectCode === '37-5.HL1' && state.itemId === 'SAME-NAME-A').effectiveProgress, 70);
+
+const approvalFilteredStates = Array.from(buildProgressStates([
+  { updateId: 'BASE-PENDING', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-13', itemType: 'MASTER', itemId: 'PENDING-100', progressEnd: 95, taskStatus: 'Đang làm', approvalStatus: '', updatedAt: '2026-07-16T01:00:00.000Z', rowNumber: 80 },
+  { updateId: 'CURRENT-PENDING', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-20', itemType: 'MASTER', itemId: 'PENDING-100', progressEnd: 100, taskStatus: 'Hoàn thành', approvalStatus: 'PENDING', updatedAt: '2026-07-22T01:00:00.000Z', rowNumber: 120 },
+  { updateId: 'BASE-REJECTED', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-13', itemType: 'MASTER', itemId: 'REJECTED-100', progressEnd: 70, taskStatus: 'Đang làm', approvalStatus: '', updatedAt: '2026-07-16T02:00:00.000Z', rowNumber: 81 },
+  { updateId: 'CURRENT-REJECTED', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-20', itemType: 'MASTER', itemId: 'REJECTED-100', progressEnd: 100, taskStatus: 'Hoàn thành', approvalStatus: 'REJECTED', updatedAt: '2026-07-22T02:00:00.000Z', rowNumber: 121 },
+  { updateId: 'CURRENT-APPROVED', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-20', itemType: 'MASTER', itemId: 'APPROVED-100', progressEnd: 100, taskStatus: 'Hoàn thành', approvalStatus: 'APPROVED', updatedAt: '2026-07-22T03:00:00.000Z', rowNumber: 122 }
+], 'WEEK-2026-07-20'));
+const pendingState = approvalFilteredStates.find((state) => state.itemId === 'PENDING-100');
+assert.equal(pendingState.currentWeekProgress, 100);
+assert.equal(pendingState.effectiveProgress, 95);
+assert.equal(pendingState.effectiveUpdateId, 'BASE-PENDING');
+const rejectedState = approvalFilteredStates.find((state) => state.itemId === 'REJECTED-100');
+assert.equal(rejectedState.currentWeekProgress, 100);
+assert.equal(rejectedState.effectiveProgress, 70);
+assert.equal(rejectedState.effectiveUpdateId, 'BASE-REJECTED');
+const approvedState = approvalFilteredStates.find((state) => state.itemId === 'APPROVED-100');
+assert.equal(approvedState.effectiveProgress, 100);
+assert.equal(approvedState.effectiveApprovalStatus, 'APPROVED');
 
 const legacyCoexistence = Array.from(buildProgressStates([
   { projectCode: 'P-LEGACY', deptCode: 'D1', weekCode: canonicalWeek('WEEK-2026-06-28'), itemType: 'MASTER', itemId: 'M1', progressEnd: 75, updatedAt: '2026-06-29T01:00:00.000Z', rowNumber: 10 },

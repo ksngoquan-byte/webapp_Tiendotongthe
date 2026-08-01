@@ -208,7 +208,9 @@ const planContext = vm.createContext({
   }),
   qltdDeptPlanFindMappedSortOrder_: (_depts, dept) => mappedDepts.find((item) => item.deptCode === dept.deptCode)?.sortOrder || 9999,
   qltdDeptPlanBuildMasterContextMap_: () => ({ byCode: {}, warning: null }),
-  qltdDeptPlanEnrichWithMasterContext_: (deptPlan) => deptPlan
+  qltdDeptPlanEnrichWithMasterContext_: (deptPlan) => deptPlan,
+  qltdDeptPlanReadWeeklyProgressStateMap_: () => ({ byKey: {}, rowsRead: 0, stateCount: 0, sourceRead: false, warning: null }),
+  qltdDeptPlanApplyWeeklyProgressStates_: (deptPlan) => deptPlan
 });
 vm.runInContext(extractFunction(planSource, 'qltdDeptPlanMatchesRequestedDept_'), planContext);
 vm.runInContext(extractFunction(planSource, 'qltdDeptPlanListForProject_'), planContext);

@@ -72,6 +72,11 @@ function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, request
 
   const masterContextResult = qltdDeptPlanBuildMasterContextMap_(project.projectCode);
   if (masterContextResult.warning) warnings.push(masterContextResult.warning);
+  const weeklyProgressResult = qltdDeptPlanReadWeeklyProgressStateMap_(project.projectCode);
+  if (weeklyProgressResult.warning) warnings.push(weeklyProgressResult.warning);
+  performance.weeklyUpdateRowsRead = weeklyProgressResult.rowsRead;
+  performance.weeklyProgressStateCount = weeklyProgressResult.stateCount;
+  performance.weeklySourceCount = weeklyProgressResult.sourceRead ? 1 : 0;
   const ss = SpreadsheetApp.openById(project.deptSpreadsheetId);
 
   if (allowedMappedDepts.length) {
@@ -123,6 +128,11 @@ function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, request
         warnings,
         project.projectCode
       );
+      qltdDeptPlanApplyWeeklyProgressStates_(
+        deptPlan,
+        project.projectCode,
+        weeklyProgressResult.byKey
+      );
 
       if (deptPlan.masterCount > 0) {
         departments.push(deptPlan);
@@ -144,6 +154,11 @@ function qltdDeptPlanListForProject_(projectCode, actorUser, actorEmail, request
           masterContextResult.byCode,
           warnings,
           project.projectCode
+        );
+        qltdDeptPlanApplyWeeklyProgressStates_(
+          deptPlan,
+          project.projectCode,
+          weeklyProgressResult.byKey
         );
         departments.push(deptPlan);
       }
@@ -241,7 +256,7 @@ function qltdDeptPlanParseSheet_(sheet, project, performance) {
     performance.columnsRead = Math.max(performance.columnsRead, lastColumn);
     performance.cellsRead += lastRow * lastColumn;
     performance.sheetCount += 1;
-    performance.sourceCount = performance.sheetCount + 1;
+    performance.sourceCount = performance.sheetCount + 1 + Number(performance.weeklySourceCount || 0);
   }
   if (!values || values.length < 3) return null;
 
@@ -423,6 +438,166 @@ function qltdDeptPlanEnrichWithMasterContext_(deptPlan, masterByCode, warnings, 
     });
   });
   return deptPlan;
+}
+
+function qltdDeptPlanReadWeeklyProgressStateMap_(projectCode) {
+  const empty = { byKey: {}, rowsRead: 0, stateCount: 0, sourceRead: false, warning: null };
+  if (typeof qltdWeeklyTaskUpdatesRead_ !== 'function' || typeof qltdWeeklyTaskUpdatesBuildProgressStates_ !== 'function') {
+    return Object.assign({}, empty, {
+      warning: {
+        type: 'WEEKLY_PROGRESS_UNAVAILABLE',
+        projectCode: projectCode,
+        message: 'Weekly progress service is unavailable; department source progress was retained.'
+      }
+    });
+  }
+
+  const read = qltdWeeklyTaskUpdatesRead_();
+  if (!read || read.error) {
+    return Object.assign({}, empty, {
+      sourceRead: !!read,
+      warning: {
+        type: 'WEEKLY_PROGRESS_UNAVAILABLE',
+        projectCode: projectCode,
+        code: read && read.error && read.error.code || '',
+        message: 'Weekly progress could not be read; department source progress was retained.'
+      }
+    });
+  }
+
+  const updates = Array.isArray(read.updates) ? read.updates : [];
+  const byKey = qltdDeptPlanBuildWeeklyProgressStateMap_(
+    projectCode,
+    updates,
+    qltdDeptPlanCurrentWeekCode_()
+  );
+  return {
+    byKey: byKey,
+    rowsRead: updates.length,
+    stateCount: Object.keys(byKey).length,
+    sourceRead: true,
+    warning: null
+  };
+}
+
+function qltdDeptPlanBuildWeeklyProgressStateMap_(projectCode, updates, targetWeekCode) {
+  const normalizedProjectCode = qltdWorkNormalizeCode_(projectCode);
+  const scopedUpdates = (Array.isArray(updates) ? updates : []).filter(function(update) {
+    return update &&
+      qltdWorkNormalizeCode_(update.projectCode) === normalizedProjectCode &&
+      String(update.itemType || '').trim().toUpperCase() === QLTD_DEPT_PLAN_ROW_TYPE_MASTER;
+  });
+  const states = qltdWeeklyTaskUpdatesBuildProgressStates_(scopedUpdates, targetWeekCode);
+  return (states || []).reduce(function(byKey, state) {
+    const key = qltdDeptPlanWeeklyProgressKey_(
+      state.projectCode,
+      state.deptCode,
+      state.itemType,
+      state.itemId
+    );
+    if (!key) return byKey;
+    if (!byKey[key] || qltdDeptPlanIsLaterWeeklyProgressState_(state, byKey[key])) byKey[key] = state;
+    return byKey;
+  }, {});
+}
+
+function qltdDeptPlanApplyWeeklyProgressStates_(deptPlan, projectCode, progressByKey) {
+  const source = progressByKey || {};
+  const deptCodes = [
+    deptPlan && deptPlan.deptCode,
+    deptPlan && deptPlan.deptCodeRaw,
+    deptPlan && deptPlan.masterDeptCode,
+    deptPlan && deptPlan.projectUnitCode,
+    deptPlan && deptPlan.projectUnitCodeRaw
+  ].filter(function(value, index, values) {
+    return !!String(value || '').trim() && values.indexOf(value) === index;
+  });
+
+  (deptPlan && deptPlan.masters || []).forEach(function(master) {
+    let state = null;
+    for (let index = 0; index < deptCodes.length && !state; index += 1) {
+      state = source[qltdDeptPlanWeeklyProgressKey_(
+        projectCode,
+        deptCodes[index],
+        QLTD_DEPT_PLAN_ROW_TYPE_MASTER,
+        master.masterCode
+      )] || null;
+    }
+    if (!state || state.effectiveProgress === null || state.effectiveProgress === undefined) return;
+
+    const progress = Number(state.effectiveProgress);
+    if (!isFinite(progress)) return;
+    const effectiveProgress = Math.max(0, Math.min(100, progress));
+    const effectiveStatus = qltdDeptPlanResolveEffectiveStatus_(
+      effectiveProgress,
+      state.effectiveTaskStatus,
+      master.status
+    );
+    master.sourceProgress = master.progress;
+    master.sourceStatus = master.status;
+    master.progress = effectiveProgress;
+    master.status = effectiveStatus;
+    master.effectiveProgress = effectiveProgress;
+    master.effectiveStatus = effectiveStatus;
+    master.effectiveProgressSource = 'WEEKLY_TASK_UPDATES';
+    master.latestEffectiveWeek = state.latestUpdatedWeek || state.latestUpdateWeek || '';
+    master.latestEffectiveUpdatedAt = state.latestUpdatedAt || '';
+    master.effectiveApprovalStatus = state.effectiveApprovalStatus || '';
+    master.effectiveUpdateId = state.effectiveUpdateId || '';
+  });
+  return deptPlan;
+}
+
+function qltdDeptPlanResolveEffectiveStatus_(progress, weeklyStatus, fallbackStatus) {
+  if (Number(progress) >= 100) return 'Hoàn thành';
+  const status = String(weeklyStatus || fallbackStatus || '').trim();
+  const normalized = qltdDeptPlanNormalizeHeader_(status);
+  if (normalized === 'HOANTHANH' || normalized === 'COMPLETE' || normalized === 'DONE') {
+    return Number(progress) > 0 ? 'Đang làm' : 'Chưa bắt đầu';
+  }
+  if (status) return status;
+  return Number(progress) > 0 ? 'Đang làm' : 'Chưa bắt đầu';
+}
+
+function qltdDeptPlanWeeklyProgressKey_(projectCode, deptCode, itemType, itemId) {
+  const project = qltdWorkNormalizeCode_(projectCode);
+  const dept = qltdDeptPlanCanonicalDeptCode_(deptCode);
+  const type = String(itemType || '').trim().toUpperCase();
+  const id = qltdDeptPlanNormalizeMasterCode_(itemId);
+  return project && dept && type && id ? [project, dept, type, id].join('|') : '';
+}
+
+function qltdDeptPlanCanonicalDeptCode_(value) {
+  const normalized = qltdWorkNormalizeCode_(value);
+  if (!normalized) return '';
+  const canonical = typeof qltdMasterDeptCanonicalCode_ === 'function'
+    ? qltdMasterDeptCanonicalCode_(normalized)
+    : '';
+  return canonical || normalized;
+}
+
+function qltdDeptPlanIsLaterWeeklyProgressState_(candidate, current) {
+  const weekOrder = String(candidate && (candidate.latestUpdatedWeek || candidate.latestUpdateWeek) || '')
+    .localeCompare(String(current && (current.latestUpdatedWeek || current.latestUpdateWeek) || ''));
+  if (weekOrder) return weekOrder > 0;
+  const timeOrder = String(candidate && candidate.latestUpdatedAt || '')
+    .localeCompare(String(current && current.latestUpdatedAt || ''));
+  if (timeOrder) return timeOrder > 0;
+  const rowOrder = Number(candidate && candidate.effectiveRowNumber || 0) - Number(current && current.effectiveRowNumber || 0);
+  if (rowOrder) return rowOrder > 0;
+  return String(candidate && candidate.effectiveUpdateId || '') > String(current && current.effectiveUpdateId || '');
+}
+
+function qltdDeptPlanCurrentWeekCode_(now) {
+  const timeZone = Session.getScriptTimeZone() || 'Asia/Ho_Chi_Minh';
+  const today = Utilities.formatDate(now || new Date(), timeZone, 'yyyy-MM-dd');
+  const parts = today.split('-').map(Number);
+  const monday = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  const weekday = monday.getUTCDay() || 7;
+  monday.setUTCDate(monday.getUTCDate() - weekday + 1);
+  return 'WEEK-' + monday.getUTCFullYear() + '-' +
+    String(monday.getUTCMonth() + 1).padStart(2, '0') + '-' +
+    String(monday.getUTCDate()).padStart(2, '0');
 }
 
 function qltdDeptPlanNormalizeMasterCode_(value) {

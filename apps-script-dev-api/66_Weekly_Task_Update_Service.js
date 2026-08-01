@@ -2164,8 +2164,9 @@ function qltdWeeklyTaskUpdatesIsLaterRecord_(candidate, current) {
   return Number(candidate.rowNumber || 0) > Number(current.rowNumber || 0);
 }
 function qltdWeeklyTaskUpdatesIsEffectiveProgressRecord_(update) {
-  return !(update && update.itemType === 'PB_DETAIL' &&
-    (update.approvalStatus === QLTD_WEEKLY_TASK_APPROVAL_STATUS.PENDING || update.approvalStatus === QLTD_WEEKLY_TASK_APPROVAL_STATUS.REJECTED));
+  if (!update) return false;
+  return update.approvalStatus !== QLTD_WEEKLY_TASK_APPROVAL_STATUS.PENDING &&
+    update.approvalStatus !== QLTD_WEEKLY_TASK_APPROVAL_STATUS.REJECTED;
 }
 function qltdWeeklyTaskUpdatesBuildProgressStates_(updates, selectedWeekCode) {
   const targetWeekCode = qltdWeeklyTaskUpdatesCanonicalWeekCode_(selectedWeekCode);
@@ -2203,7 +2204,11 @@ function qltdWeeklyTaskUpdatesBuildProgressStates_(updates, selectedWeekCode) {
       hasCurrentWeekUpdate: !!current,
       latestUpdateWeek: effective ? effective.weekCode : '',
       latestUpdatedWeek: effective ? effective.weekCode : '',
-      latestUpdatedAt: effective ? effective.updatedAt : ''
+      latestUpdatedAt: effective ? effective.updatedAt : '',
+      effectiveTaskStatus: effective ? effective.taskStatus : '',
+      effectiveApprovalStatus: effective ? effective.approvalStatus : '',
+      effectiveUpdateId: effective ? effective.updateId : '',
+      effectiveRowNumber: effective ? Number(effective.rowNumber || 0) : 0
     };
   }).filter(function(state) { return !!state; });
 }
