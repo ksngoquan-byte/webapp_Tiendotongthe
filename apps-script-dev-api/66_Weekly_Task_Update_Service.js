@@ -146,12 +146,14 @@ function qltdWeeklyTaskUpdatesGet_(params) {
     scope.dept
   );
   const delegatedDeptManager = qltdUserProjectDeptAccessDecisionIsDeptManager_(managerPermission);
-  const updates = read.updates.filter(function(update) {
+  const scopedUpdates = read.updates.filter(function(update) {
     const inScope = update.projectCode === scope.projectCode && update.deptCode === scope.deptCode &&
-      update.weekCode === scope.weekCode && (!itemType || update.itemType === itemType) &&
-      (!itemId || update.itemId === itemId);
+      (!itemType || update.itemType === itemType) && (!itemId || update.itemId === itemId);
     if (!inScope) return false;
     return delegatedDeptManager || role !== 'REPORTER' || update.itemType !== 'PB_DETAIL' || update.updatedBy === auth.email;
+  });
+  const updates = scopedUpdates.filter(function(update) {
+    return update.weekCode === scope.weekCode;
   });
   updates.forEach(function(update) {
     update.budgetCumulative = read.updates.filter(function(candidate) {
@@ -166,6 +168,7 @@ function qltdWeeklyTaskUpdatesGet_(params) {
     deptCode: scope.deptCode,
     weekCode: scope.weekCode,
     updates: updates,
+    progressStates: qltdWeeklyTaskUpdatesBuildProgressStates_(scopedUpdates, scope.weekCode),
     count: updates.length
   }, scope.warnings, scope.meta);
 }
@@ -535,19 +538,23 @@ function qltdWeeklyTaskUpdatesSave_(payload) {
     const read = qltdWeeklyTaskUpdatesRead_();
     if (read.error) return qltdWorkError_(QLTD_WEEKLY_TASK_UPDATE_SOURCE, action, read.error.code, read.error.message, scope.meta, scope.warnings);
     const key = qltdWeeklyTaskUpdatesBuildKey_(scope.projectCode, scope.deptCode, scope.weekCode, validation.itemType, validation.itemId);
-    const pending = reporterProposal ? read.updates.find(function(update) {
+    const pending = reporterProposal ? read.updates.filter(function(update) {
       return update.key === key &&
         update.updatedBy === auth.email &&
         update.approvalStatus === QLTD_WEEKLY_TASK_APPROVAL_STATUS.PENDING;
-    }) : null;
+    }).reduce(function(latest, update) {
+      return qltdWeeklyTaskUpdatesIsLaterRecord_(update, latest) ? update : latest;
+    }, null) : null;
     if (pending) {
       return qltdWorkError_(QLTD_WEEKLY_TASK_UPDATE_SOURCE, action, 'PB_DETAIL_APPROVAL_ALREADY_PENDING', 'A PB_DETAIL proposal is already pending for this week.', scope.meta, scope.warnings, {
         existingUpdate: pending
       });
     }
-    const existing = reporterProposal ? null : read.updates.find(function(update) {
+    const existing = reporterProposal ? null : read.updates.filter(function(update) {
       return update.key === key && (validation.itemType === 'MASTER' || !update.approvalStatus);
-    });
+    }).reduce(function(latest, update) {
+      return qltdWeeklyTaskUpdatesIsLaterRecord_(update, latest) ? update : latest;
+    }, null);
     if (existing && validation.progressEnd < existing.progressEnd && !payload.confirmProgressDecrease) {
       return qltdWorkError_(QLTD_WEEKLY_TASK_UPDATE_SOURCE, action, 'PROGRESS_DECREASE_CONFIRM_REQUIRED', 'Progress is lower than the saved value. Confirmation is required.', scope.meta, scope.warnings, {
         currentProgress: existing.progressEnd,
@@ -600,7 +607,7 @@ function qltdWeeklyTaskUpdatesSave_(payload) {
       UpdateId: existing ? existing.updateId : 'WTU_' + Utilities.getUuid(),
       ProjectCode: scope.projectCode,
       DeptCode: scope.deptCode,
-      WeekCode: scope.weekCode,
+      WeekCode: existing && existing.sourceWeekCode || scope.weekCode,
       ItemType: validation.itemType,
       ItemId: validation.itemId,
       ThisWeekResult: validation.thisWeekResult,
@@ -1047,7 +1054,7 @@ function qltdWeeklyTaskUpdatesResolveCashFlowType_(source) {
 }
 
 function qltdWeeklyTaskUpdatesResolveScope_(action, input, auth) {
-  const weekCode = qltdWorkNormalizeWeekCode_(input.weekCode);
+  const weekCode = qltdWeeklyTaskUpdatesCanonicalWeekCode_(input.weekCode);
   if (!weekCode) return { error: qltdWorkError_(QLTD_WEEKLY_TASK_UPDATE_SOURCE, action, 'WEEK_CODE_REQUIRED', 'weekCode is required.', { email: auth.email }) };
   const resolved = qltdWorkResolveProjectDept_(action, input, QLTD_WEEKLY_TASK_UPDATE_SOURCE, { requireDeptSpreadsheet: true, actorUser: auth.user, meta: { email: auth.email, weekCode: weekCode } });
   if (resolved.error) {
@@ -2068,9 +2075,10 @@ function qltdWeeklyTaskUpdatesInspectSheet_(sheet) {
 }
 
 function qltdWeeklyTaskUpdatesNormalize_(object, rowNumber) {
+  const sourceWeekCode = qltdWorkNormalizeWeekCode_(object.WeekCode);
   const update = {
     updateId: String(object.UpdateId || '').trim(), projectCode: qltdWorkNormalizeCode_(object.ProjectCode), deptCode: qltdWorkNormalizeCode_(object.DeptCode),
-    weekCode: qltdWorkNormalizeWeekCode_(object.WeekCode), itemType: qltdWeeklyTaskUpdatesNormalizeType_(object.ItemType), itemId: String(object.ItemId || '').trim(),
+    weekCode: qltdWeeklyTaskUpdatesCanonicalWeekCode_(sourceWeekCode), sourceWeekCode: sourceWeekCode, itemType: qltdWeeklyTaskUpdatesNormalizeType_(object.ItemType), itemId: String(object.ItemId || '').trim(),
     thisWeekResult: String(object.ThisWeekResult || ''), progressEnd: Number(object.ProgressEnd || 0), taskStatus: String(object.TaskStatus || ''),
     actualStart: qltdBudgetFormatDate_(object.ActualStart), actualFinish: qltdBudgetFormatDate_(object.ActualFinish), issue: String(object.Issue || ''),
     recommendation: String(object.Recommendation || ''), budgetThisWeek: qltdBudgetToNumber_(object.BudgetThisWeek), budgetNote: String(object.BudgetNote || ''),
@@ -2129,6 +2137,76 @@ function qltdWeeklyTaskUpdatesSortItems_(a, b) {
 }
 
 function qltdWeeklyTaskUpdatesNormalizeType_(value) { const type = String(value || '').trim().toUpperCase(); return type === 'MASTER' || type === 'PB_DETAIL' ? type : ''; }
+function qltdWeeklyTaskUpdatesCanonicalWeekCode_(value) {
+  const normalized = qltdWorkNormalizeWeekCode_(value);
+  const match = normalized.match(/^WEEK-(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return normalized;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return normalized;
+  // Legacy clients serialized a local Monday as the previous UTC Sunday.
+  if (date.getUTCDay() !== 0) return normalized;
+  date.setUTCDate(date.getUTCDate() + 1);
+  return 'WEEK-' + date.getUTCFullYear() + '-' + String(date.getUTCMonth() + 1).padStart(2, '0') + '-' + String(date.getUTCDate()).padStart(2, '0');
+}
+function qltdWeeklyTaskUpdatesBuildItemKey_(projectCode, deptCode, itemType, itemId) {
+  return [qltdWorkNormalizeCode_(projectCode), qltdWorkNormalizeCode_(deptCode), qltdWeeklyTaskUpdatesNormalizeType_(itemType), String(itemId || '').trim()].join('|');
+}
+function qltdWeeklyTaskUpdatesIsLaterRecord_(candidate, current) {
+  if (!candidate) return false;
+  if (!current) return true;
+  const weekOrder = String(candidate.weekCode || '').localeCompare(String(current.weekCode || ''));
+  if (weekOrder) return weekOrder > 0;
+  const timeOrder = String(candidate.updatedAt || '').localeCompare(String(current.updatedAt || ''));
+  if (timeOrder) return timeOrder > 0;
+  return Number(candidate.rowNumber || 0) > Number(current.rowNumber || 0);
+}
+function qltdWeeklyTaskUpdatesIsEffectiveProgressRecord_(update) {
+  return !(update && update.itemType === 'PB_DETAIL' &&
+    (update.approvalStatus === QLTD_WEEKLY_TASK_APPROVAL_STATUS.PENDING || update.approvalStatus === QLTD_WEEKLY_TASK_APPROVAL_STATUS.REJECTED));
+}
+function qltdWeeklyTaskUpdatesBuildProgressStates_(updates, selectedWeekCode) {
+  const targetWeekCode = qltdWeeklyTaskUpdatesCanonicalWeekCode_(selectedWeekCode);
+  const buckets = {};
+  (updates || []).forEach(function(update) {
+    if (!update || !update.weekCode || update.weekCode > targetWeekCode) return;
+    const key = qltdWeeklyTaskUpdatesBuildItemKey_(update.projectCode, update.deptCode, update.itemType, update.itemId);
+    const bucket = buckets[key] || (buckets[key] = { current: null, currentEffective: null, previous: null });
+    if (update.weekCode === targetWeekCode) {
+      if (qltdWeeklyTaskUpdatesIsLaterRecord_(update, bucket.current)) bucket.current = update;
+      if (qltdWeeklyTaskUpdatesIsEffectiveProgressRecord_(update) && qltdWeeklyTaskUpdatesIsLaterRecord_(update, bucket.currentEffective)) bucket.currentEffective = update;
+      return;
+    }
+    if (qltdWeeklyTaskUpdatesIsEffectiveProgressRecord_(update) && qltdWeeklyTaskUpdatesIsLaterRecord_(update, bucket.previous)) bucket.previous = update;
+  });
+  return Object.keys(buckets).map(function(key) {
+    const bucket = buckets[key];
+    const current = bucket.current;
+    const previous = bucket.previous;
+    const effective = bucket.currentEffective || previous;
+    const identity = current || effective;
+    if (!identity) return null;
+    const effectiveProgress = effective ? Number(effective.progressEnd || 0) : null;
+    return {
+      projectCode: identity.projectCode,
+      deptCode: identity.deptCode,
+      weekCode: targetWeekCode,
+      itemType: identity.itemType,
+      itemId: identity.itemId,
+      currentProgress: effectiveProgress,
+      currentWeekProgress: current ? Number(current.progressEnd || 0) : null,
+      effectiveProgress: effectiveProgress,
+      previousProgress: previous ? Number(previous.progressEnd || 0) : null,
+      progressDelta: bucket.currentEffective && previous ? Number(bucket.currentEffective.progressEnd || 0) - Number(previous.progressEnd || 0) : null,
+      hasCurrentWeekUpdate: !!current,
+      latestUpdateWeek: effective ? effective.weekCode : '',
+      latestUpdatedWeek: effective ? effective.weekCode : '',
+      latestUpdatedAt: effective ? effective.updatedAt : ''
+    };
+  }).filter(function(state) { return !!state; });
+}
 function qltdWeeklyTaskUpdatesNormalizeApprovalStatus_(value) {
   const status = String(value || '').trim().toUpperCase();
   return status === QLTD_WEEKLY_TASK_APPROVAL_STATUS.PENDING ||
@@ -2213,4 +2291,4 @@ function qltdWeeklyTaskUpdatesIsOfficialComplete_(source) {
     statusKey.indexOf('done') >= 0;
 }
 function qltdWeeklyTaskUpdatesDate_(value, allowBlank) { const text = String(value || '').trim(); if (!text) return allowBlank ? '' : null; const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!match) return null; const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const date = new Date(year, month - 1, day); return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? text : null; }
-function qltdWeeklyTaskUpdatesBuildKey_(projectCode, deptCode, weekCode, itemType, itemId) { return [qltdWorkNormalizeCode_(projectCode), qltdWorkNormalizeCode_(deptCode), qltdWorkNormalizeWeekCode_(weekCode), qltdWeeklyTaskUpdatesNormalizeType_(itemType), String(itemId || '').trim()].join('|'); }
+function qltdWeeklyTaskUpdatesBuildKey_(projectCode, deptCode, weekCode, itemType, itemId) { return [qltdWorkNormalizeCode_(projectCode), qltdWorkNormalizeCode_(deptCode), qltdWeeklyTaskUpdatesCanonicalWeekCode_(weekCode), qltdWeeklyTaskUpdatesNormalizeType_(itemType), String(itemId || '').trim()].join('|'); }

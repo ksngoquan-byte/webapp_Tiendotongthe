@@ -214,8 +214,8 @@ const context = {
   console
 };
 vm.createContext(context);
-vm.runInContext(`${source}\nthis.api = { headers: QLTD_WEEKLY_TASK_UPDATE_HEADERS, baseHeaders: QLTD_WEEKLY_TASK_UPDATE_BASE_HEADERS, buildKey: qltdWeeklyTaskUpdatesBuildKey_, buildItem: qltdWeeklyTaskUpdatesBuildItem_, sortItems: qltdWeeklyTaskUpdatesSortItems_, date: qltdWeeklyTaskUpdatesDate_, inspect: qltdWeeklyTaskUpdatesInspectSheet_, save: qltdWeeklyTaskUpdatesSave_, getApprovals: qltdWeeklyMasterApprovalsGet_, review: qltdWeeklyMasterApprovalReview_, getPbApprovals: qltdWeeklyPbDetailApprovalsGet_, reviewPb: qltdWeeklyPbDetailApprovalReview_, resolveActualDate: qltdWeeklyTaskUpdatesResolveActualDateLifecycle_, validateTransition: qltdWeeklyTaskUpdatesValidateMasterStatusTransition_, mapPbDetailStatus: qltdWeeklyTaskUpdatesMapPbDetailStatus_, syncTask: qltdWeeklyTaskUpdatesSyncTask_, readBudgetActualIndex: qltdWeeklyTaskUpdatesReadBudgetActualIndex_, readBudgetContext: qltdWeeklyTaskUpdatesReadBudgetContext_, invalidateCache: qltdWeeklyTaskUpdatesInvalidateGanttCache_, parseMaster: qltdWeeklyMasterParseCongViec_, applyMaster: qltdWeeklyMasterApprovalApplyToMaster_, findSingleMaster: qltdWeeklyTaskUpdatesFindSingleMasterTask_ };`, context);
-const { headers, baseHeaders, buildKey, buildItem, sortItems, date, inspect, save, getApprovals, review, getPbApprovals, reviewPb, resolveActualDate, validateTransition, mapPbDetailStatus, syncTask, readBudgetActualIndex, readBudgetContext, invalidateCache, parseMaster, applyMaster, findSingleMaster } = context.api;
+vm.runInContext(`${source}\nthis.api = { headers: QLTD_WEEKLY_TASK_UPDATE_HEADERS, baseHeaders: QLTD_WEEKLY_TASK_UPDATE_BASE_HEADERS, buildKey: qltdWeeklyTaskUpdatesBuildKey_, buildItem: qltdWeeklyTaskUpdatesBuildItem_, sortItems: qltdWeeklyTaskUpdatesSortItems_, date: qltdWeeklyTaskUpdatesDate_, inspect: qltdWeeklyTaskUpdatesInspectSheet_, save: qltdWeeklyTaskUpdatesSave_, get: qltdWeeklyTaskUpdatesGet_, canonicalWeek: qltdWeeklyTaskUpdatesCanonicalWeekCode_, buildProgressStates: qltdWeeklyTaskUpdatesBuildProgressStates_, getApprovals: qltdWeeklyMasterApprovalsGet_, review: qltdWeeklyMasterApprovalReview_, getPbApprovals: qltdWeeklyPbDetailApprovalsGet_, reviewPb: qltdWeeklyPbDetailApprovalReview_, resolveActualDate: qltdWeeklyTaskUpdatesResolveActualDateLifecycle_, validateTransition: qltdWeeklyTaskUpdatesValidateMasterStatusTransition_, mapPbDetailStatus: qltdWeeklyTaskUpdatesMapPbDetailStatus_, syncTask: qltdWeeklyTaskUpdatesSyncTask_, readBudgetActualIndex: qltdWeeklyTaskUpdatesReadBudgetActualIndex_, readBudgetContext: qltdWeeklyTaskUpdatesReadBudgetContext_, invalidateCache: qltdWeeklyTaskUpdatesInvalidateGanttCache_, parseMaster: qltdWeeklyMasterParseCongViec_, applyMaster: qltdWeeklyMasterApprovalApplyToMaster_, findSingleMaster: qltdWeeklyTaskUpdatesFindSingleMasterTask_ };`, context);
+const { headers, baseHeaders, buildKey, buildItem, sortItems, date, inspect, save, get, canonicalWeek, buildProgressStates, getApprovals, review, getPbApprovals, reviewPb, resolveActualDate, validateTransition, mapPbDetailStatus, syncTask, readBudgetActualIndex, readBudgetContext, invalidateCache, parseMaster, applyMaster, findSingleMaster } = context.api;
 const stubMasterApprovalApply = (target, auth, dependencyDecision, recoveryPlan) => {
   masterApprovalSyncCalls.push({ target, auth, dependencyDecision, recoveryPlan });
   return {
@@ -312,6 +312,9 @@ context.SpreadsheetApp = {
 context.qltdWorkAppendTaskNote_ = (before, note, email) => [String(before || '').trim(), `${note} [${email}]`].filter(Boolean).join('\n');
 
 assert.equal(buildKey('p1', 'ptda', 'week-2026-06-01', 'master', 'CV-1'), 'P1|PTDA|WEEK-2026-06-01|MASTER|CV-1');
+assert.equal(canonicalWeek('WEEK-2026-06-28'), 'WEEK-2026-06-29');
+assert.equal(canonicalWeek('WEEK-2026-06-29'), 'WEEK-2026-06-29');
+assert.equal(buildKey('37-5.HL', 'Thietke', 'WEEK-2026-06-28', 'MASTER', 'CV-1'), '37-5.HL|THIETKE|WEEK-2026-06-29|MASTER|CV-1');
 assert.equal(date('2026-06-01'), '2026-06-01');
 assert.equal(date('2026-02-30'), null);
 
@@ -405,6 +408,8 @@ assert.equal(inspect(badSheet).headerMatches, false);
 
 sheetRows.push(headers.slice());
 const saveBase = { email: 'user@example.com', projectCode: 'P1', deptCode: 'PTDA', weekCode: 'WEEK-2026-06-01', itemType: 'MASTER', itemId: 'CV-1', progressEnd: 30, taskStatus: 'Đang thực hiện', actualStart: '2026-06-01', thisWeekResult: 'Đã làm' };
+assert.equal(save({ ...saveBase, itemId: 'CV-INVALID-HIGH', progressEnd: 101 }).code, 'INVALID_PROGRESS');
+assert.equal(save({ ...saveBase, itemId: 'CV-INVALID-LOW', progressEnd: -1 }).code, 'INVALID_PROGRESS');
 const firstSave = save({ ...saveBase, requestId: 'weekly-progress-001' });
 assert.equal(firstSave.inserted, true);
 assert.equal(firstSave.masterWriteback.applied, true);
@@ -419,6 +424,66 @@ assert.equal(save({ ...saveBase, itemId: 'CV-2' }).inserted, true);
 assert.equal(sheetRows.length, 3);
 assert.equal(save({ ...saveBase, weekCode: 'WEEK-2026-06-08' }).inserted, true);
 assert.equal(sheetRows.length, 4);
+
+const cumulativeBase = {
+  ...saveBase,
+  projectCode: '37-5.HL',
+  deptCode: 'Thietke',
+  itemId: 'CV-CUMULATIVE',
+  weekCode: 'WEEK-2026-06-29',
+  progressEnd: 80,
+  requestId: 'weekly-cumulative-027'
+};
+assert.equal(get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-06', itemType: 'MASTER', itemId: 'CV-NO-HISTORY' }).progressStates.length, 0);
+assert.equal(save(cumulativeBase).inserted, true);
+const week27State = get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'CV-CUMULATIVE' });
+assert.equal(week27State.updates.length, 1);
+assert.deepEqual(
+  { ...week27State.progressStates[0] },
+  {
+    projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'CV-CUMULATIVE',
+    currentProgress: 80, currentWeekProgress: 80, effectiveProgress: 80, previousProgress: null, progressDelta: null,
+    hasCurrentWeekUpdate: true, latestUpdateWeek: 'WEEK-2026-06-29', latestUpdatedWeek: 'WEEK-2026-06-29', latestUpdatedAt: '2026-06-20T00:00:00.000Z'
+  }
+);
+const week28Inherited = get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'thietke', weekCode: 'WEEK-2026-07-06', itemType: 'MASTER', itemId: 'CV-CUMULATIVE' });
+assert.equal(week28Inherited.updates.length, 0);
+assert.equal(week28Inherited.progressStates[0].currentProgress, 80);
+assert.equal(week28Inherited.progressStates[0].currentWeekProgress, null);
+assert.equal(week28Inherited.progressStates[0].effectiveProgress, 80);
+assert.equal(week28Inherited.progressStates[0].previousProgress, 80);
+assert.equal(week28Inherited.progressStates[0].hasCurrentWeekUpdate, false);
+const rowsBeforeWeek28Save = sheetRows.length;
+assert.equal(save({ ...cumulativeBase, weekCode: 'WEEK-2026-07-06', progressEnd: 90, requestId: 'weekly-cumulative-028' }).inserted, true);
+assert.equal(sheetRows.length, rowsBeforeWeek28Save + 1);
+const week28Saved = get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-06', itemType: 'MASTER', itemId: 'CV-CUMULATIVE' });
+assert.equal(week28Saved.progressStates[0].currentProgress, 90);
+assert.equal(week28Saved.progressStates[0].effectiveProgress, 90);
+assert.equal(week28Saved.progressStates[0].previousProgress, 80);
+assert.equal(week28Saved.progressStates[0].progressDelta, 10);
+assert.equal(week28Saved.progressStates[0].hasCurrentWeekUpdate, true);
+assert.equal(get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'CV-CUMULATIVE' }).updates[0].progressEnd, 80);
+assert.equal(save({ ...cumulativeBase, weekCode: 'WEEK-2026-07-06', progressEnd: 95, requestId: 'weekly-cumulative-028-edit' }).duplicatePrevented, true);
+assert.equal(sheetRows.length, rowsBeforeWeek28Save + 1);
+assert.equal(get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-07-06', itemType: 'MASTER', itemId: 'CV-CUMULATIVE' }).updates[0].progressEnd, 95);
+assert.equal(get({ email: 'user@example.com', projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'CV-CUMULATIVE' }).updates[0].progressEnd, 80);
+
+const isolatedStates = Array.from(buildProgressStates([
+  { projectCode: '37-5.HL', deptCode: 'THIETKE', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'SAME-NAME-A', progressEnd: 30, updatedAt: '2026-06-20', rowNumber: 1 },
+  { projectCode: '37-5.HL', deptCode: 'Thietke', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'SAME-NAME-B', progressEnd: 40, updatedAt: '2026-06-20', rowNumber: 2 },
+  { projectCode: '37-5.HL1', deptCode: 'THIETKE', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'SAME-NAME-A', progressEnd: 70, updatedAt: '2026-06-20', rowNumber: 3 }
+], 'WEEK-2026-07-06'));
+assert.equal(isolatedStates.length, 3);
+assert.equal(isolatedStates.find((state) => state.projectCode === '37-5.HL' && state.itemId === 'SAME-NAME-A').effectiveProgress, 30);
+assert.equal(isolatedStates.find((state) => state.projectCode === '37-5.HL' && state.itemId === 'SAME-NAME-B').effectiveProgress, 40);
+assert.equal(isolatedStates.find((state) => state.projectCode === '37-5.HL1' && state.itemId === 'SAME-NAME-A').effectiveProgress, 70);
+
+const legacyCoexistence = Array.from(buildProgressStates([
+  { projectCode: 'P-LEGACY', deptCode: 'D1', weekCode: canonicalWeek('WEEK-2026-06-28'), itemType: 'MASTER', itemId: 'M1', progressEnd: 75, updatedAt: '2026-06-29T01:00:00.000Z', rowNumber: 10 },
+  { projectCode: 'P-LEGACY', deptCode: 'D1', weekCode: 'WEEK-2026-06-29', itemType: 'MASTER', itemId: 'M1', progressEnd: 80, updatedAt: '2026-06-29T02:00:00.000Z', rowNumber: 11 }
+], 'WEEK-2026-06-29'));
+assert.equal(legacyCoexistence.length, 1);
+assert.equal(legacyCoexistence[0].currentProgress, 80);
 
 const doingAt100Writebacks = masterProgressWritebackCalls.length;
 const doingAt100 = save({ ...saveBase, itemId: 'CV-100-DOING', requestId: 'weekly-100-doing-001', progressEnd: 100, taskStatus: 'Đang làm', actualStart: '2026-06-01', actualFinish: '' });
@@ -762,6 +827,16 @@ assert.equal(detailSyncCalls.length, syncCountBeforeReporter);
 assert.equal(budgetWriteCalls.length, budgetWriteCountBeforeReporter);
 assert.equal(notificationPendingCalls.at(-1).updateId, reporterPending.update.updateId);
 assert.equal(notificationPendingCalls.at(-1).itemType, 'PB_DETAIL');
+const reporterCurrentRead = get({ email: authEmail, projectCode: 'P1', deptCode: 'PTDA', weekCode: reporterBase.weekCode, itemType: 'PB_DETAIL', itemId: 'DT-REPORTER' });
+assert.equal(reporterCurrentRead.updates.length, 1);
+assert.equal(reporterCurrentRead.progressStates[0].currentWeekProgress, 35);
+assert.equal(reporterCurrentRead.progressStates[0].effectiveProgress, null);
+assert.equal(get({ email: authEmail, projectCode: 'P1', deptCode: 'PTDA', weekCode: 'WEEK-2026-06-29', itemType: 'PB_DETAIL', itemId: 'DT-REPORTER' }).progressStates.length, 0);
+authEmail = 'other@example.com';
+const otherReporterRead = get({ email: authEmail, projectCode: 'P1', deptCode: 'PTDA', weekCode: reporterBase.weekCode, itemType: 'PB_DETAIL', itemId: 'DT-REPORTER' });
+assert.equal(otherReporterRead.updates.length, 0);
+assert.equal(otherReporterRead.progressStates.length, 0);
+authEmail = 'reporter@example.com';
 const duplicatePending = save({ ...reporterBase, progressEnd: 40 });
 assert.equal(duplicatePending.success, false);
 assert.equal(duplicatePending.code, 'PB_DETAIL_APPROVAL_ALREADY_PENDING');

@@ -281,7 +281,7 @@ const weeklyContext = vm.createContext({
   qltdCanReadProjectDept_: (user, _projectCode, deptCode, dept) => permissionContext.qltdWorkCanReadDept_(user, deptCode, dept),
   qltdWorkError_: planContext.qltdWorkError_
 });
-vm.runInContext(extractFunction(weeklySource, 'qltdWeeklyTaskUpdatesResolveScope_'), weeklyContext);
+vm.runInContext(`${extractFunction(weeklySource, 'qltdWeeklyTaskUpdatesCanonicalWeekCode_')}\n${extractFunction(weeklySource, 'qltdWeeklyTaskUpdatesResolveScope_')}`, weeklyContext);
 const deniedWeekly = weeklyContext.qltdWeeklyTaskUpdatesResolveScope_(
   'work_listweeklyitems',
   { weekCode: 'WEEK-2026-06-22' },

@@ -4407,6 +4407,20 @@ function normalizeWeeklyUpdateMatchValue(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function normalizeWeeklyWeekCode(value) {
+  const normalized = normalizeWeeklyUpdateMatchValue(value);
+  const match = normalized.match(/^WEEK-(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return normalized;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return normalized;
+  if (date.getUTCDay() !== 0) return normalized;
+  date.setUTCDate(date.getUTCDate() + 1);
+  return `WEEK-${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
 function findWeeklySavedUpdate(updates, item, context = {}) {
   if (!item || !Array.isArray(updates)) return null;
   const matches = updates.filter((update) =>
@@ -4414,7 +4428,7 @@ function findWeeklySavedUpdate(updates, item, context = {}) {
     update.itemId === item.itemId &&
     normalizeWeeklyUpdateMatchValue(update.projectCode) === normalizeWeeklyUpdateMatchValue(context.projectCode) &&
     normalizeWeeklyUpdateMatchValue(update.deptCode) === normalizeWeeklyUpdateMatchValue(context.deptCode) &&
-    normalizeWeeklyUpdateMatchValue(update.weekCode) === normalizeWeeklyUpdateMatchValue(context.weekCode)
+    normalizeWeeklyWeekCode(update.weekCode) === normalizeWeeklyWeekCode(context.weekCode)
   );
   matches.sort((left, right) => {
     const timeOrder = String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''));
@@ -4423,13 +4437,35 @@ function findWeeklySavedUpdate(updates, item, context = {}) {
   return matches[0] || null;
 }
 
+function findWeeklyProgressState(progressStates, item, context = {}) {
+  if (!item || !Array.isArray(progressStates)) return null;
+  return progressStates.find((state) =>
+    state.itemType === item.itemType &&
+    state.itemId === item.itemId &&
+    normalizeWeeklyUpdateMatchValue(state.projectCode) === normalizeWeeklyUpdateMatchValue(context.projectCode) &&
+    normalizeWeeklyUpdateMatchValue(state.deptCode) === normalizeWeeklyUpdateMatchValue(context.deptCode) &&
+    normalizeWeeklyWeekCode(state.weekCode) === normalizeWeeklyWeekCode(context.weekCode)
+  ) || null;
+}
+
+function applyWeeklyProgressStates(items, progressStates, context = {}) {
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const progressState = findWeeklyProgressState(progressStates, item, context);
+    return progressState ? { ...item, weeklyProgressState: progressState } : item;
+  });
+}
+
 function getWeeklyEffectiveTaskState(item, saved) {
   const source = item || {};
   const proposalOnly = saved?.itemType === 'PB_DETAIL' && ['PENDING', 'REJECTED'].includes(String(saved.approvalStatus || '').toUpperCase());
   const effectiveSaved = proposalOnly ? null : saved;
+  const inheritedProgress = source.weeklyProgressState?.effectiveProgress;
+  const fallbackProgress = inheritedProgress !== undefined && inheritedProgress !== null
+    ? Number(inheritedProgress)
+    : Number(source.progress || 0);
   const progress = effectiveSaved && effectiveSaved.progressEnd !== undefined && effectiveSaved.progressEnd !== null
     ? Number(effectiveSaved.progressEnd)
-    : Number(source.progress || 0);
+    : fallbackProgress;
   return {
     progress: isNaN(progress) ? Number(source.progress || 0) : progress,
     status: String(effectiveSaved?.taskStatus || source.status || 'Chưa cập nhật').trim(),
@@ -4556,7 +4592,7 @@ function qltdWeeklyGetOverdueMetric(model, workspaceTab) {
 function renderWeeklyWorkflowBadges(item, saved, week) {
   const badges = [];
   if (saved) badges.push('<span class="weekly-workflow-badge is-updated">Đã cập nhật</span>');
-  else badges.push('<span class="weekly-workflow-badge is-missing">Chưa cập nhật</span>');
+  else badges.push('<span class="weekly-workflow-badge is-missing">Chưa cập nhật tuần này</span>');
   if (qltdWeeklyIsOverdue(item, saved, week)) badges.push('<span class="weekly-workflow-badge is-overdue">Quá hạn</span>');
   if (qltdWeeklyIsDue(item, saved, week)) badges.push('<span class="weekly-workflow-badge is-due">Đến hạn</span>');
   if (saved?.approvalStatus) {
@@ -5110,9 +5146,9 @@ function renderWeeklyActualDateLifecycle(selected, saved, progressValue, statusV
 
 function renderWeeklySelectedForm(selected, saved) {
   const completionHint = selected.itemType === 'MASTER' ? '<p class="weekly-approval-hint">Chỉ khi chọn trạng thái Hoàn thành, hệ thống mới gửi Admin/PMO phê duyệt. Tỷ lệ hoàn thành chỉ dùng để báo cáo tiến độ.</p>' : '';
-  const progressValue = saved?.progressEnd ?? selected.progress ?? 0;
-  const statusValue = saved?.taskStatus || selected.status || 'Chưa bắt đầu';
   const effectiveState = getWeeklyEffectiveTaskState(selected, saved);
+  const progressValue = effectiveState.progress;
+  const statusValue = saved?.taskStatus || selected.status || 'Chưa bắt đầu';
   const currentStatusDisplay = selected.officialComplete ? 'Hoàn thành — 100%' : `${effectiveState.status} — ${effectiveState.progress}%`;
   const ownerDisplay = getWeeklyPersonDisplay(selected.owner);
   const displayTitle = qltdWeeklyDisplayTitle(selected);
@@ -5359,13 +5395,13 @@ function qltdWeeklyLatestExportUpdates(updates, context) {
   const expected = {
     projectCode: normalizeWeeklyUpdateMatchValue(context?.projectCode),
     deptCode: normalizeWeeklyUpdateMatchValue(context?.deptCode),
-    weekCode: normalizeWeeklyUpdateMatchValue(context?.weekCode)
+    weekCode: normalizeWeeklyWeekCode(context?.weekCode)
   };
   const selected = new Map();
   (Array.isArray(updates) ? updates : []).forEach((update, sourceIndex) => {
     if (normalizeWeeklyUpdateMatchValue(update?.projectCode) !== expected.projectCode ||
         normalizeWeeklyUpdateMatchValue(update?.deptCode) !== expected.deptCode ||
-        normalizeWeeklyUpdateMatchValue(update?.weekCode) !== expected.weekCode) return;
+        normalizeWeeklyWeekCode(update?.weekCode) !== expected.weekCode) return;
     const key = qltdWeeklyExportItemKey(update);
     if (!key) return;
     const timestamp = qltdWeeklyExportTimestamp(update.updatedAt);
@@ -5798,9 +5834,11 @@ async function loadWeeklyTaskData(payload, dept, week, periods, filters = {}) {
       }
       if (requestSessionVersion !== qltdWeeklyTaskSessionVersion || requestCacheVersion !== getWeeklyTaskCacheVersion(key)) return null;
       const itemData = itemsResult.data || itemsResult; const updateData = updatesResult.data || updatesResult;
-      const items = Array.isArray(itemData.items) ? itemData.items.slice() : [];
+      let items = Array.isArray(itemData.items) ? itemData.items.slice() : [];
       if (qltdWeeklyForcedItem && qltdWeeklyForcedItem.projectCode === payload.projectCode && qltdWeeklyForcedItem.deptCode === deptCode && qltdWeeklyForcedItem.weekCode === week.weekId && !items.some((item) => item.itemType === qltdWeeklyForcedItem.itemType && item.itemId === qltdWeeklyForcedItem.itemId)) items.push(qltdWeeklyForcedItem);
-      const nextState = { key, items, updates: updateData.updates || [], nextItems: [], standaloneBudgetItems: itemData.standaloneBudgetItems || [], budgetDrafts: previousDrafts, capabilities: itemData.capabilities || { canUpdate: false, canReviewWeekly: false, role: '' }, loading: false, refreshing: false, error: '', refreshWarning: '', accessDenied: false };
+      const progressStates = Array.isArray(updateData.progressStates) ? updateData.progressStates.slice() : [];
+      items = applyWeeklyProgressStates(items, progressStates, common);
+      const nextState = { key, items, updates: updateData.updates || [], progressStates, nextItems: [], standaloneBudgetItems: itemData.standaloneBudgetItems || [], budgetDrafts: previousDrafts, capabilities: itemData.capabilities || { canUpdate: false, canReviewWeekly: false, role: '' }, loading: false, refreshing: false, error: '', refreshWarning: '', accessDenied: false };
       qltdWeeklyTaskCache.set(key, cloneWeeklyTaskState(nextState));
       if (qltdWeeklyTaskView.key === key) {
         qltdWeeklyTaskView = cloneWeeklyTaskState(nextState);
@@ -5838,7 +5876,7 @@ function weeklySavedUpdateMatchesPayload(update, payload) {
   if (!update || !payload) return false;
   return normalizeWeeklyUpdateMatchValue(update.projectCode) === normalizeWeeklyUpdateMatchValue(payload.projectCode) &&
     normalizeWeeklyUpdateMatchValue(update.deptCode) === normalizeWeeklyUpdateMatchValue(payload.deptCode) &&
-    normalizeWeeklyUpdateMatchValue(update.weekCode) === normalizeWeeklyUpdateMatchValue(payload.weekCode) &&
+    normalizeWeeklyWeekCode(update.weekCode) === normalizeWeeklyWeekCode(payload.weekCode) &&
     update.itemType === payload.itemType &&
     update.itemId === payload.itemId &&
     Number(update.progressEnd) === Number(payload.progressEnd) &&

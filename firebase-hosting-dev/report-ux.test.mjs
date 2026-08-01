@@ -384,6 +384,19 @@ const weeklySaved = { projectCode: 'P1', deptCode: 'KEHOACH', weekCode: 'WEEK-1'
 assert.equal(weeklyStateContext.findSaved([weeklySaved], weeklyItem, { projectCode: 'p1', deptCode: 'kehoach', weekCode: 'week-1' }), weeklySaved);
 assert.equal(weeklyStateContext.findSaved([weeklySaved], weeklyItem, { projectCode: 'P1', deptCode: 'PTDA', weekCode: 'WEEK-1' }), null);
 assert.deepEqual({ ...weeklyStateContext.effective(weeklyItem, weeklySaved) }, { progress: 1, status: 'Đang thực hiện', actualStart: '2026-06-21', actualFinish: '' });
+const inheritedWeeklyItem = {
+  ...weeklyItem,
+  weeklyProgressState: {
+    currentProgress: null,
+    effectiveProgress: 80,
+    previousProgress: 80,
+    progressDelta: null,
+    hasCurrentWeekUpdate: false,
+    latestUpdateWeek: 'WEEK-2026-06-29'
+  }
+};
+assert.equal(weeklyStateContext.effective(inheritedWeeklyItem, null).progress, 80);
+assert.equal(weeklyStateContext.findSaved([{ ...weeklySaved, weekCode: 'WEEK-2026-06-28' }], weeklyItem, { projectCode: 'P1', deptCode: 'KEHOACH', weekCode: 'WEEK-2026-06-29' }).itemId, 'DT-1');
 const rejectedRound = { ...weeklySaved, updateId: 'OLD', updatedAt: '2026-06-20T00:00:00.000Z', rowNumber: 2, approvalStatus: 'REJECTED', progressEnd: 40 };
 const pendingRound = { ...weeklySaved, updateId: 'NEW', updatedAt: '2026-06-21T00:00:00.000Z', rowNumber: 3, approvalStatus: 'PENDING', progressEnd: 60 };
 assert.equal(weeklyStateContext.findSaved([rejectedRound, pendingRound], weeklyItem, { projectCode: 'P1', deptCode: 'KEHOACH', weekCode: 'WEEK-1' }).updateId, 'NEW');
@@ -391,6 +404,7 @@ assert.deepEqual(
   { ...weeklyStateContext.effective(weeklyItem, pendingRound) },
   { progress: 0, status: 'Chưa bắt đầu', actualStart: '', actualFinish: '' }
 );
+assert.equal(weeklyStateContext.effective(inheritedWeeklyItem, pendingRound).progress, 80);
 
 const weekContext = { pad2: (value) => String(value).padStart(2, '0'), qltdSelectedWeekId: 'WEEK-2026-06-29', qltdSelectedWeeklyItemKey: 'PB_DETAIL:DT-1', qltdWeeklyForcedItem: {} };
 vm.createContext(weekContext);
@@ -413,6 +427,7 @@ const weeklyModelContext = { normalizeSearchText: (value) => String(value || '')
 vm.createContext(weeklyModelContext);
 vm.runInContext([
   extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
+  extractFunction(app, 'normalizeWeeklyWeekCode'),
   extractFunction(app, 'findWeeklySavedUpdate'),
   extractFunction(app, 'getWeeklyEffectiveTaskState'),
   extractFunction(app, 'normalizeWeeklyStatusKey'),
@@ -457,6 +472,7 @@ assert.equal(allModel.taskOverdue, 1);
 assert.deepEqual({ ...weeklyModelContext.qltdWeeklyGetOverdueMetric(allModel, 'objectives') }, { label: 'Mục tiêu quá hạn', count: 1 });
 assert.deepEqual({ ...weeklyModelContext.qltdWeeklyGetOverdueMetric(allModel, 'tasks') }, { label: 'Công việc quá hạn', count: 1 });
 assert.match(extractFunction(app, 'renderWeeklyWorkflowBadges'), /qltdWeeklyIsOverdue\(item, saved, week\)/);
+assert.match(extractFunction(app, 'renderWeeklyWorkflowBadges'), /Chưa cập nhật tuần này/);
 assert.equal(allModel.notUpdated, 1);
 assert.deepEqual(modelItems.map((item) => item.itemId), originalModelOrder);
 const filterIds = (filters) => Array.from(weeklyModelContext.qltdWeeklyFilterWorkItems(modelItems, modelUpdates, modelContext, modelWeek, filters, 'user@example.com'), (item) => item.itemId);
@@ -475,6 +491,8 @@ assert.match(weeklyBindings, /data-week-nav/);
 assert.match(weeklyBindings, /qltdCurrentWeekPeriod\(\)\.weekId/);
 assert.match(weeklyBindings, /qltdWeekPeriodFromDateValue/);
 assert.match(weeklyBindings, /qltdWeeklyResetTaskFilters/);
+const weeklyNavigationBinding = weeklyBindings.slice(0, weeklyBindings.indexOf("document.querySelectorAll('[data-weekly-workspace-tab]')"));
+assert.doesNotMatch(weeklyNavigationBinding, /saveWeeklyTaskUpdate|weekly_taskupdates_save|method:\s*'POST'/);
 assert.match(weeklyBindings, /data-weekly-clear-filters/);
 assert.match(weeklyBindings, /data-weekly-filter-status/);
 assert.doesNotMatch(weeklyBindings, /loadWeeklyTaskDataForCurrent\(\{ search:/);
@@ -546,7 +564,7 @@ const weeklyExportContext = {
   normalizeWeeklyUpdateMatchValue: (value) => String(value || '').trim().toUpperCase(),
   getDeptPlanMasterWbs: (master) => String(master?.officialWbs || master?.stt || master?.wbs || '').trim(),
   getWeeklyEffectiveTaskState: (item, update) => ({
-    progress: update?.progressEnd ?? item.progress ?? 0,
+    progress: update?.progressEnd ?? item.weeklyProgressState?.effectiveProgress ?? item.progress ?? 0,
     status: update?.taskStatus || item.status || 'Chưa cập nhật',
     actualFinish: update?.actualFinish || item.actualFinish || ''
   }),
@@ -555,7 +573,7 @@ const weeklyExportContext = {
   formatApprovalStatus: (value, compact) => compact ? ({ PENDING: 'Chờ duyệt', APPROVED: 'Đã duyệt', REJECTED: 'Bị trả lại' }[value] || '') : value
 };
 vm.createContext(weeklyExportContext);
-vm.runInContext(`${extractFunction(app, 'qltdExactRowDisplayTitle')}\n${extractFunction(app, 'qltdWeeklyDisplayTitle')}\n${weeklyExportSource}\nthis.enrichItems = qltdWeeklyEnrichExportItemsWithParentMasters; this.buildExportModel = qltdWeeklyBuildExportModel; this.styleReport = qltdWeeklyStyleReportSheet; this.naturalWbsCompare = qltdWeeklyNaturalWbsCompare; this.planGroupLabel = qltdWeeklyNextPlanGroupLabel; this.exportHeaders = QLTD_WEEKLY_EXPORT_HEADERS; this.nextExportHeaders = QLTD_WEEKLY_NEXT_EXPORT_HEADERS;`, weeklyExportContext);
+vm.runInContext(`${extractFunction(app, 'normalizeWeeklyWeekCode')}\n${extractFunction(app, 'qltdExactRowDisplayTitle')}\n${extractFunction(app, 'qltdWeeklyDisplayTitle')}\n${weeklyExportSource}\nthis.enrichItems = qltdWeeklyEnrichExportItemsWithParentMasters; this.buildExportModel = qltdWeeklyBuildExportModel; this.styleReport = qltdWeeklyStyleReportSheet; this.naturalWbsCompare = qltdWeeklyNaturalWbsCompare; this.planGroupLabel = qltdWeeklyNextPlanGroupLabel; this.exportHeaders = QLTD_WEEKLY_EXPORT_HEADERS; this.nextExportHeaders = QLTD_WEEKLY_NEXT_EXPORT_HEADERS;`, weeklyExportContext);
 assert.ok(weeklyExportContext.naturalWbsCompare('V.2', 'V.10') < 0);
 assert.ok(weeklyExportContext.naturalWbsCompare('1.2', '1.11') < 0);
 const exportContext = { projectCode: 'P1', deptCode: 'D1', weekCode: 'WEEK-2026-06-22' };
@@ -570,6 +588,7 @@ const exportItems = [
   { itemType: 'MASTER', itemId: 'M3', masterTaskCode: 'M3', wbs: 'V.3', taskName: 'Mục tiêu độc lập' },
   { itemType: 'PB_DETAIL', itemId: 'ORPHAN', parentMasterTaskCode: 'M404', wbs: 'V.99', taskName: 'Việc mồ côi', eligibleReason: 'OVERDUE' }
 ];
+exportItems.find((item) => item.itemId === 'M3').weeklyProgressState = { effectiveProgress: 80, hasCurrentWeekUpdate: false };
 const deptMasters = [
   { masterCode: 'M2', officialWbs: 'V.2', taskName: 'Mục tiêu 2', ownHangMuc: 'LK05', planStart: '2026-06-02', planFinish: '2026-06-28', progress: 20, status: 'Đang thực hiện', owner: 'Chủ trì M2' },
   { masterCode: 'M10', officialWbs: 'V.10-X', taskName: 'Không được ghi đè MASTER API' },
@@ -600,6 +619,7 @@ assert.equal(exportModel.rows[1].values[8], 50);
 assert.equal(exportModel.rows[1].values[10], 'Vướng mới');
 assert.equal(exportModel.rows[1].values[11], 'Giải pháp mới');
 assert.equal(exportModel.rows.filter((row) => row.values[2] === 'Việc cùng tên').length, 2);
+assert.equal(exportModel.rows.find((row) => row.item.itemId === 'M3').values[8], 80);
 assert.equal(exportModel.rows.at(-1).orphan, true);
 assert.equal(exportModel.warnings.length, 1);
 assert.equal(Object.prototype.toString.call(exportModel.rows[1].values[5]), '[object Date]');
@@ -759,6 +779,7 @@ assert.match(weeklyForm, /KẾT QUẢ THỰC HIỆN TRONG TUẦN/);
 assert.match(weeklyForm, /TÌNH TRẠNG CÔNG VIỆC/);
 assert.match(weeklyForm, /Mức hoàn thành đến hết tuần/);
 assert.match(weeklyForm, /renderWeeklyActualDateLifecycle/);
+assert.match(weeklyForm, /const progressValue = effectiveState\.progress/);
 assert.match(weeklyForm, /weekly-form-close/);
 assert.match(weeklyForm, /Chỉ khi chọn trạng thái Hoàn thành/);
 assert.match(weeklyForm, /Tỷ lệ hoàn thành chỉ dùng để báo cáo tiến độ/);
@@ -840,7 +861,7 @@ const weeklyLoaderContext = {
     if (weeklyLoaderContext.denied) return { success: false, code: 'ACCESS_DENIED', message: 'Không có quyền' };
     if (weeklyLoaderContext.failRefresh) return { success: false, code: 'TEMPORARY', message: 'Lỗi tạm thời' };
     if (action === 'work_listweeklyitems') return { success: true, data: { items: [{ itemType: 'PB_DETAIL', itemId: `${params.projectCode}-${params.deptCode}-${params.weekCode}` }], standaloneBudgetItems: [], capabilities: { canUpdate: true } } };
-    return { success: true, data: { updates: [] } };
+    return { success: true, data: { updates: [], progressStates: [{ projectCode: params.projectCode, deptCode: params.deptCode, weekCode: params.weekCode, itemType: 'PB_DETAIL', itemId: `${params.projectCode}-${params.deptCode}-${params.weekCode}`, effectiveProgress: 80, hasCurrentWeekUpdate: false }] } };
   }
 };
 vm.createContext(weeklyLoaderContext);
@@ -849,6 +870,10 @@ vm.runInContext([
   extractFunction(app, 'cloneWeeklyTaskState'),
   extractFunction(app, 'getWeeklyTaskCacheVersion'),
   extractFunction(app, 'invalidateWeeklyTaskCacheKey'),
+  extractFunction(app, 'normalizeWeeklyUpdateMatchValue'),
+  extractFunction(app, 'normalizeWeeklyWeekCode'),
+  extractFunction(app, 'findWeeklyProgressState'),
+  extractFunction(app, 'applyWeeklyProgressStates'),
   `async ${loader}`
 ].join('\n'), weeklyLoaderContext);
 const weeklyPayload = (projectCode) => ({ projectCode });
@@ -856,6 +881,7 @@ const weeklyDept = (deptCode) => ({ deptCode });
 const weeklyPeriod = (weekId) => ({ weekId, weekStart: '2026-06-22', weekEnd: '2026-06-28' });
 await weeklyLoaderContext.loadWeeklyTaskData(weeklyPayload('P1'), weeklyDept('D1'), weeklyPeriod('W1'), []);
 assert.deepEqual(weeklyLoaderContext.apiCalls.map((call) => call.action), ['work_listweeklyitems', 'weekly_taskupdates_get']);
+assert.equal(weeklyLoaderContext.qltdWeeklyTaskView.items[0].weeklyProgressState.effectiveProgress, 80);
 assert.equal(weeklyLoaderContext.qltdWeeklyTaskInFlight.size, 0);
 await weeklyLoaderContext.loadWeeklyTaskData(weeklyPayload('P1'), weeklyDept('D1'), weeklyPeriod('W1'), []);
 assert.equal(weeklyLoaderContext.apiCalls.length, 2);
@@ -1190,7 +1216,7 @@ const recoveryContext = {
   console
 };
 vm.createContext(recoveryContext);
-vm.runInContext(`${verifySource}\nthis.verifySaved = verifyWeeklyTaskUpdateSaved;`, recoveryContext);
+vm.runInContext(`${extractFunction(app, 'normalizeWeeklyWeekCode')}\n${verifySource}\nthis.verifySaved = verifyWeeklyTaskUpdateSaved;`, recoveryContext);
 const recovered = await recoveryContext.verifySaved({ ...weeklySaved, email: 'user@example.com', thisWeekResult: '' });
 assert.equal(recovered.itemId, 'DT-1');
 assert.deepEqual(recoveryCalls.map((call) => call.action), ['weekly_taskupdates_get']);
