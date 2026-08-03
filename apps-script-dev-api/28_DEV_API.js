@@ -536,6 +536,15 @@ function qltdDevApiGanttData_(params) {
 }
 
 function qltdDevApiDashboardSummary_(params) {
+  const loadDashboard = String(params && params.loadDashboard || '').trim();
+  if (loadDashboard !== '1') {
+    return qltdDevApiJson_({
+      success: false,
+      code: 'DASHBOARD_LOAD_INTENT_REQUIRED',
+      message: 'Dashboard chỉ được tải khi người dùng yêu cầu.',
+      apiStatus: 'CONNECTED'
+    });
+  }
   const projectCode = params && params.projectCode;
   const resolution = resolveCurrentUser_(params);
   if (!resolution.success) return qltdDevApiJson_(resolution);

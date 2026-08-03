@@ -1174,11 +1174,14 @@ const ganttDirtyContext = {
   qltdGanttDirtyProjects: new Set(),
   qltdGanttForceRefreshProjects: new Set(),
   qltdActiveView: 'report',
+  qltdDashboardLoadRequestSeq: 0,
   loadCount: 0,
   dashboardLoadCount: 0,
+  dashboardIdleCount: 0,
   document: { getElementById: () => ({ value: 'P1' }) },
   getStoredProjectCode: () => '',
   qltdInvalidateDashboardCacheForProject: () => {},
+  renderDashboardIdle: () => { ganttDirtyContext.dashboardIdleCount += 1; },
   loadGanttDataForSelectedProject: async () => { ganttDirtyContext.loadCount += 1; },
   loadDashboardSummaryForSelectedProject: async () => { ganttDirtyContext.dashboardLoadCount += 1; }
 };
@@ -1195,7 +1198,9 @@ await ganttDirtyContext.markWeeklyGanttRefreshRequired('P2');
 assert.equal(ganttDirtyContext.loadCount, 1);
 ganttDirtyContext.qltdActiveView = 'dashboard';
 await ganttDirtyContext.markWeeklyGanttRefreshRequired('P1');
-assert.equal(ganttDirtyContext.dashboardLoadCount, 1);
+assert.equal(ganttDirtyContext.dashboardLoadCount, 0);
+assert.equal(ganttDirtyContext.dashboardIdleCount, 1);
+assert.equal(ganttDirtyContext.qltdDashboardLoadRequestSeq, 1);
 const showViewSource = latestFunction('showWeb07View', 'bindWeb07Navigation');
 assert.match(showViewSource, /qltdGanttDirtyProjects\.has\(projectCode\)/);
 assert.match(showViewSource, /viewName === 'dashboard'[\s\S]*loadDashboardSummaryForSelectedProject/);

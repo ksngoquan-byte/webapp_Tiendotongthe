@@ -164,7 +164,7 @@ const dashboardPayload = vm.runInContext("qltdDashboardGetSummaryForProject_('P1
 const utf8Bytes = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
 const benchmark = {
   criticalRequestsBefore: ['bootstrap', 'ganttData', 'getProjectScheduleState', 'notifications_list'],
-  criticalRequestsAfter: ['bootstrap', 'dashboardSummary'],
+  criticalRequestsAfter: ['bootstrap'],
   ganttBytes: utf8Bytes(ganttPayload),
   dashboardBytes: utf8Bytes(dashboardPayload),
   ganttTaskFields: Object.keys(ganttPayload.data[0]).length,
@@ -176,7 +176,7 @@ const benchmark = {
 };
 
 assert.equal(benchmark.criticalRequestsBefore.length, 4);
-assert.equal(benchmark.criticalRequestsAfter.length, 2);
+assert.equal(benchmark.criticalRequestsAfter.length, 1);
 assert.ok(benchmark.dashboardBytes < benchmark.ganttBytes);
 assert.ok(benchmark.dashboardTaskFields < benchmark.ganttTaskFields);
 assert.equal(benchmark.hiddenGanttRenderAfter, 0);

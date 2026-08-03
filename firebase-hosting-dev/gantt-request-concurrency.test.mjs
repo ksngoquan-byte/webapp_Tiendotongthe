@@ -386,7 +386,8 @@ test('ganttData fetch passes AbortController signal and auto-load is view scoped
   const fetchSource = extractFunction(appSource, 'fetchBackendJson');
   assert.match(fetchSource, /signal: options\.signal/);
   const projectOptionsSource = extractFunction(appSource, 'renderProjectOptions');
-  assert.match(projectOptionsSource, /qltdActiveView === 'dashboard'\) loadDashboardSummaryForSelectedProject/);
+  assert.doesNotMatch(projectOptionsSource, /qltdActiveView === 'dashboard'\) loadDashboardSummaryForSelectedProject/);
+  assert.match(projectOptionsSource, /renderDashboardIdle\(selector\.value/);
   assert.match(projectOptionsSource, /qltdActiveView === 'gantt'\) loadGanttDataForSelectedProject/);
 });
 

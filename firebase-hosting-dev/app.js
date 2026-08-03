@@ -811,7 +811,11 @@ function renderProjectOptions(projects = []) {
   const hasStoredProject = projects.some((project) => project.projectCode === storedProjectCode);
   selector.value = hasStoredProject ? storedProjectCode : projects[0].projectCode;
   setStoredProjectCode(selector.value);
-  if (qltdActiveView === 'dashboard') loadDashboardSummaryForSelectedProject(selector.value);
+  if (qltdActiveView === 'dashboard') {
+    qltdDashboardPayload = null;
+    qltdDashboardLoadRequestSeq += 1;
+    renderDashboardIdle(selector.value);
+  }
   if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
 
   if (status) {
@@ -826,7 +830,11 @@ function renderProjectOptions(projects = []) {
     if (qltdActiveView === 'report') loadDeptPlansForSelectedProject(selector.value);
     if (qltdActiveView === 'budget') loadBudgetDashboardForSelectedProject({ force: true });
     if (qltdActiveView === 'admin') loadAdminMasterApprovals();
-    if (qltdActiveView === 'dashboard') loadDashboardSummaryForSelectedProject(selector.value);
+    if (qltdActiveView === 'dashboard') {
+      qltdDashboardPayload = null;
+      qltdDashboardLoadRequestSeq += 1;
+      renderDashboardIdle(selector.value);
+    }
     if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
   };
 }
@@ -4875,7 +4883,9 @@ async function saveAdminApprovedObjective() {
     if (qltdActiveView === 'gantt') {
       await loadGanttDataForSelectedProject(projectCode, { forceRefresh: true });
     } else if (qltdActiveView === 'dashboard') {
-      await loadDashboardSummaryForSelectedProject(projectCode, { forceRefresh: true });
+      qltdDashboardPayload = null;
+      qltdDashboardLoadRequestSeq += 1;
+      renderDashboardIdle(projectCode, 'Dữ liệu đã thay đổi. Bấm “Tải Dashboard” để cập nhật.');
     }
     await loadWeeklyTaskDataForCurrent({ force: true });
   } catch (error) {
@@ -6098,7 +6108,9 @@ async function markWeeklyGanttRefreshRequired(projectCode, options = {}) {
   if (selectedProjectCode === projectCode && qltdActiveView === 'gantt') {
     await loadGanttDataForSelectedProject(projectCode, { forceRefresh: !!options.forceRefresh });
   } else if (selectedProjectCode === projectCode && qltdActiveView === 'dashboard') {
-    await loadDashboardSummaryForSelectedProject(projectCode, { forceRefresh: true });
+    qltdDashboardPayload = null;
+    qltdDashboardLoadRequestSeq += 1;
+    renderDashboardIdle(projectCode, 'Tiến độ đã thay đổi. Bấm “Tải Dashboard” để cập nhật.');
   }
 }
 
@@ -6361,6 +6373,7 @@ function qltdRequestDashboardSummary(projectCode, options = {}) {
 
   const request = fetchBackendJson('dashboardSummary', {
     projectCode: code,
+    loadDashboard: '1',
     forceRefresh: options.forceRefresh ? '1' : ''
   }, { auth: true }).then((payload) => {
     if (!payload || payload.success === false) {
@@ -6455,6 +6468,28 @@ async function qltdWeb07LoadGanttDataForSelectedProject(projectCode, options = {
     qltdGanttPayload = null;
     if (qltdActiveView === 'gantt') renderGanttError(error);
     return null;
+  }
+}
+
+function renderDashboardIdle(projectCode, message = '') {
+  const panel = document.getElementById('web07DashboardPanel');
+  if (!panel) return;
+  const code = String(projectCode || '').trim();
+  panel.innerHTML = `
+    <div class="web07-card">
+      <p class="empty-state">${escapeHtml(message || (code ? `Đã chọn dự án ${code}. Dashboard chưa được tải.` : 'Dashboard chưa được tải.'))}</p>
+      <p class="web07-muted">Dữ liệu Dashboard chỉ được gọi khi bạn yêu cầu.</p>
+      <button id="dashboardLoadButton" type="button">Tải Dashboard</button>
+    </div>
+  `;
+  const loadButton = document.getElementById('dashboardLoadButton');
+  if (loadButton) {
+    loadButton.onclick = () => {
+      const selectedProjectCode = document.getElementById('projectSelector')?.value || code || getStoredProjectCode() || '';
+      if (!selectedProjectCode) return;
+      loadButton.disabled = true;
+      loadDashboardSummaryForSelectedProject(selectedProjectCode);
+    };
   }
 }
 
@@ -6595,8 +6630,18 @@ function renderDashboardError(error) {
     <div class="web07-card">
       <p class="empty-state">Không tải được Dashboard từ Apps Script API.</p>
       <p class="web07-muted">${escapeHtml(error.message || error)}</p>
+      <button id="dashboardRetryButton" type="button">Thử lại</button>
     </div>
   `;
+  const retryButton = document.getElementById('dashboardRetryButton');
+  if (retryButton) {
+    retryButton.onclick = () => {
+      const projectCode = document.getElementById('projectSelector')?.value || getStoredProjectCode() || '';
+      if (!projectCode) return;
+      retryButton.disabled = true;
+      loadDashboardSummaryForSelectedProject(projectCode, { forceRefresh: true });
+    };
+  }
 }
 
 function renderBudgetDashboardError(error) {
