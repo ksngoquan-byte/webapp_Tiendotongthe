@@ -25,7 +25,9 @@ jobs:
           node-version: '20'
 
       - name: Apply source patch
-        run: python3 scripts/apply_dashboard_lazy_load_patch.py
+        run: |
+          python3 scripts/apply_dashboard_lazy_load_patch.py
+          python3 scripts/update_dashboard_lazy_load_regression_tests.py
 
       - name: Install frontend dependencies
         working-directory: firebase-hosting-dev
@@ -51,6 +53,7 @@ jobs:
             firebase-hosting-dev/app.js \
             firebase-hosting-dev/dashboard-critical-path.test.mjs \
             firebase-hosting-dev/dashboard-lazy-load.test.mjs \
+            firebase-hosting-dev/gantt-request-concurrency.test.mjs \
             firebase-hosting-dev/performance-critical-boot.test.mjs \
             firebase-hosting-dev/package.json \
             apps-script-dev-api/28_DEV_API.js
