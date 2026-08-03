@@ -28,6 +28,7 @@ jobs:
         run: |
           python3 scripts/apply_dashboard_lazy_load_patch.py
           python3 scripts/update_dashboard_lazy_load_regression_tests.py
+          python3 scripts/fix_dashboard_lazy_load_test_regex.py
 
       - name: Install frontend dependencies
         working-directory: firebase-hosting-dev
