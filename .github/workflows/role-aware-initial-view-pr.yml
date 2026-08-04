@@ -25,7 +25,9 @@ jobs:
           node-version: '20'
 
       - name: Apply source patch
-        run: python3 scripts/apply_role_aware_initial_view_patch.py
+        run: |
+          python3 scripts/apply_role_aware_initial_view_patch.py
+          python3 scripts/update_role_aware_existing_tests.py
 
       - name: Install frontend dependencies
         working-directory: firebase-hosting-dev
@@ -49,6 +51,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
             firebase-hosting-dev/app.js \
+            firebase-hosting-dev/auth-registration-projects.test.mjs \
             firebase-hosting-dev/initial-view-routing.test.mjs \
             firebase-hosting-dev/package.json
           git diff --cached --check
