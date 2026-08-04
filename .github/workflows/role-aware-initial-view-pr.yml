@@ -28,6 +28,7 @@ jobs:
         run: |
           python3 scripts/apply_role_aware_initial_view_patch.py
           python3 scripts/update_role_aware_existing_tests.py
+          python3 scripts/update_role_aware_navigation_test.py
 
       - name: Install frontend dependencies
         working-directory: firebase-hosting-dev
@@ -53,6 +54,7 @@ jobs:
             firebase-hosting-dev/app.js \
             firebase-hosting-dev/auth-registration-projects.test.mjs \
             firebase-hosting-dev/initial-view-routing.test.mjs \
+            firebase-hosting-dev/navigation-budget-dashboard.test.mjs \
             firebase-hosting-dev/package.json
           git diff --cached --check
           git commit -m "perf: route initial view by role and user intent"
