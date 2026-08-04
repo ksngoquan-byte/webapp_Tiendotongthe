@@ -35,6 +35,7 @@ const renderDeptPlansSource = extractFunction(app, 'renderDeptPlans');
 const context = {
   normalizeRoleKey: (value) => String(value || '').trim().toUpperCase(),
   getStoredLastView: () => '',
+  QLTD_RESTORABLE_INITIAL_VIEWS: new Set(['report', 'gantt']),
   qltdCanAccessView: (viewName) => ['report', 'gantt', 'dashboard'].includes(viewName)
 };
 vm.createContext(context);
@@ -50,13 +51,18 @@ assert.equal(context.resolveInitialViewForUser({ role: 'REPORTER' }, {}), 'repor
 assert.equal(context.resolveInitialViewForUser({ role: 'EDITOR' }, {}), 'report');
 assert.equal(context.resolveInitialViewForUser({ role: 'ADMIN' }, {}), 'gantt');
 context.getStoredLastView = () => 'dashboard';
-assert.equal(context.resolveInitialViewForUser({ role: 'EDITOR' }, {}), 'dashboard');
+assert.equal(context.resolveInitialViewForUser({ role: 'EDITOR' }, {}), 'report');
+assert.equal(context.resolveInitialViewForUser({ role: 'ADMIN' }, {}), 'gantt');
+context.getStoredLastView = () => 'gantt';
+assert.equal(context.resolveInitialViewForUser({ role: 'EDITOR' }, {}), 'gantt');
 context.getStoredLastView = () => 'budget';
 assert.equal(context.resolveInitialViewForUser({ role: 'EDITOR' }, {}), 'report');
 
 assert.match(renderAppSource, /resolveInitialViewForUser\(effectiveProfile, currentPermissions\)/);
 assert.doesNotMatch(renderAppSource, /showWeb07View\('dashboard'/);
 assert.match(renderAppSource, /skipDataLoad:\s*true,\s*skipPersist:\s*true/);
+assert.match(app, /const QLTD_RESTORABLE_INITIAL_VIEWS = new Set\(\['report', 'gantt'\]\)/);
+assert.match(resolverSource, /QLTD_RESTORABLE_INITIAL_VIEWS\.has\(storedView\)/);
 
 assert.match(projectOptionsSource, /qltdActiveView === 'report'\) loadDeptPlansForSelectedProject/);
 assert.match(projectOptionsSource, /qltdActiveView === 'gantt'\) loadGanttDataForSelectedProject/);

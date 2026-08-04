@@ -66,6 +66,7 @@ const NAV_LABELS = {
 const PROJECT_STORAGE_KEY = 'qltd.selectedProjectCode.v1';
 const LAST_VIEW_STORAGE_KEY = 'qltd.lastView.v1';
 const DEPT_STORAGE_KEY = 'qltd.selectedDeptCode.v1';
+const QLTD_RESTORABLE_INITIAL_VIEWS = new Set(['report', 'gantt']);
 let qltdSelectedMonthCode = getDefaultMonthCode();
 let qltdSelectedMasterCode = '';
 let qltdSelectedWeekId = '';
@@ -827,7 +828,7 @@ function qltdRoleDefaultView(role) {
 
 function resolveInitialViewForUser(profile = currentUserProfile, permissions = currentPermissions) {
   const storedView = getStoredLastView(profile);
-  if (storedView && qltdCanAccessView(storedView, profile, permissions)) return storedView;
+  if (storedView && QLTD_RESTORABLE_INITIAL_VIEWS.has(storedView) && qltdCanAccessView(storedView, profile, permissions)) return storedView;
 
   const roleDefault = qltdRoleDefaultView(profile?.role);
   if (roleDefault && qltdCanAccessView(roleDefault, profile, permissions)) return roleDefault;
