@@ -64,6 +64,8 @@ const NAV_LABELS = {
 };
 
 const PROJECT_STORAGE_KEY = 'qltd.selectedProjectCode.v1';
+const LAST_VIEW_STORAGE_KEY = 'qltd.lastView.v1';
+const DEPT_STORAGE_KEY = 'qltd.selectedDeptCode.v1';
 let qltdSelectedMonthCode = getDefaultMonthCode();
 let qltdSelectedMasterCode = '';
 let qltdSelectedWeekId = '';
@@ -95,7 +97,7 @@ const QLTD_GANTT_BUSY_RETRY_DELAY_MS = 1500;
 const QLTD_GANTT_BUSY_MAX_DELAY_MS = 6000;
 const QLTD_GANTT_BUSY_MAX_ATTEMPTS = 4;
 let qltdBudgetSyncRunning = false;
-let qltdActiveView = 'dashboard';
+let qltdActiveView = '';
 let qltdDhtmlxLoadPromise = null;
 let qltdPbDetailUiLoadPromise = null;
 let qltdExcelJsLoadPromise = null;
@@ -749,21 +751,89 @@ function applyPermissions(profile = {}) {
 }
 
 
-function getStoredProjectCode() {
+function qltdGetStorageUserIdentity(profile = currentUserProfile) {
+  return String(profile?.email || auth?.currentUser?.email || '').trim().toLowerCase();
+}
+
+function qltdGetUserScopedStorageKey(baseKey, profile = currentUserProfile, scope = '') {
+  const identity = qltdGetStorageUserIdentity(profile);
+  if (!identity) return '';
+  const normalizedScope = String(scope || '').trim().toUpperCase();
+  return [baseKey, encodeURIComponent(identity), normalizedScope].filter(Boolean).join('::');
+}
+
+function qltdReadUserScopedStorage(baseKey, profile = currentUserProfile, scope = '') {
+  const key = qltdGetUserScopedStorageKey(baseKey, profile, scope);
+  if (!key) return '';
   try {
-    return localStorage.getItem(PROJECT_STORAGE_KEY) || '';
+    return localStorage.getItem(key) || '';
   } catch (error) {
-    console.warn('Cannot read selected project from localStorage', error);
+    console.warn('Cannot read user-scoped localStorage', error);
     return '';
   }
 }
 
-function setStoredProjectCode(projectCode) {
+function qltdWriteUserScopedStorage(baseKey, value, profile = currentUserProfile, scope = '') {
+  const key = qltdGetUserScopedStorageKey(baseKey, profile, scope);
+  if (!key) return;
   try {
-    localStorage.setItem(PROJECT_STORAGE_KEY, projectCode || '');
+    localStorage.setItem(key, String(value || ''));
   } catch (error) {
-    console.warn('Cannot save selected project to localStorage', error);
+    console.warn('Cannot save user-scoped localStorage', error);
   }
+}
+
+function getStoredProjectCode(profile = currentUserProfile) {
+  return qltdReadUserScopedStorage(PROJECT_STORAGE_KEY, profile);
+}
+
+function setStoredProjectCode(projectCode, profile = currentUserProfile) {
+  qltdWriteUserScopedStorage(PROJECT_STORAGE_KEY, projectCode, profile);
+}
+
+function getStoredLastView(profile = currentUserProfile) {
+  return qltdReadUserScopedStorage(LAST_VIEW_STORAGE_KEY, profile);
+}
+
+function setStoredLastView(viewName, profile = currentUserProfile) {
+  qltdWriteUserScopedStorage(LAST_VIEW_STORAGE_KEY, viewName, profile);
+}
+
+function getStoredDeptCode(projectCode = '', profile = currentUserProfile) {
+  return qltdReadUserScopedStorage(DEPT_STORAGE_KEY, profile, projectCode);
+}
+
+function setStoredDeptCode(projectCode, deptCode, profile = currentUserProfile) {
+  qltdWriteUserScopedStorage(DEPT_STORAGE_KEY, deptCode, profile, projectCode);
+}
+
+function qltdCanAccessView(viewName, profile = currentUserProfile, permissions = currentPermissions) {
+  const view = String(viewName || '').trim();
+  if (view === 'dashboard') return !!permissions?.dashboard;
+  if (view === 'budget') return !!permissions?.budgetDashboard;
+  if (view === 'gantt') return !!permissions?.gantt;
+  if (view === 'help') return !!permissions?.help;
+  if (view === 'report') return !!permissions?.reportUpdate;
+  if (view === 'admin') return canApprove(profile);
+  return false;
+}
+
+function qltdRoleDefaultView(role) {
+  const roleKey = normalizeRoleKey(role);
+  if (['REPORTER', 'EDITOR'].includes(roleKey)) return 'report';
+  if (['VIEWER', 'PMO', 'ADMIN'].includes(roleKey)) return 'gantt';
+  return '';
+}
+
+function resolveInitialViewForUser(profile = currentUserProfile, permissions = currentPermissions) {
+  const storedView = getStoredLastView(profile);
+  if (storedView && qltdCanAccessView(storedView, profile, permissions)) return storedView;
+
+  const roleDefault = qltdRoleDefaultView(profile?.role);
+  if (roleDefault && qltdCanAccessView(roleDefault, profile, permissions)) return roleDefault;
+
+  const fallbackOrder = ['report', 'gantt', 'dashboard', 'budget', 'help', 'admin'];
+  return fallbackOrder.find((viewName) => qltdCanAccessView(viewName, profile, permissions)) || '';
 }
 
 function findAppHeaderContainer() {
@@ -811,12 +881,15 @@ function renderProjectOptions(projects = []) {
   const hasStoredProject = projects.some((project) => project.projectCode === storedProjectCode);
   selector.value = hasStoredProject ? storedProjectCode : projects[0].projectCode;
   setStoredProjectCode(selector.value);
+  if (qltdActiveView === 'report') loadDeptPlansForSelectedProject(selector.value);
+  if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
+  if (qltdActiveView === 'budget') loadBudgetDashboardForSelectedProject();
+  if (qltdActiveView === 'admin') loadAdminMasterApprovals();
   if (qltdActiveView === 'dashboard') {
     qltdDashboardPayload = null;
     qltdDashboardLoadRequestSeq += 1;
     renderDashboardIdle(selector.value);
   }
-  if (qltdActiveView === 'gantt') loadGanttDataForSelectedProject(selector.value);
 
   if (status) {
     status.textContent = '';
@@ -899,11 +972,11 @@ function ensureTopNavigation() {
   const nav = document.querySelector('nav.tabs');
   if (!nav || nav.dataset.qltdFinalNav === '1') return nav;
   nav.innerHTML = [
+    NAV_LABELS.report,
+    NAV_LABELS.gantt,
     NAV_LABELS.workDashboard,
     NAV_LABELS.budgetDashboard,
-    NAV_LABELS.gantt,
     NAV_LABELS.help,
-    NAV_LABELS.report,
     NAV_LABELS.admin
   ].map((label) => `<button type="button" disabled>${escapeHtml(label)}</button>`).join('');
   nav.dataset.qltdFinalNav = '1';
@@ -1874,8 +1947,11 @@ function ensureWeb07Panels() {
 }
 
 function showWeb07View(viewName, options = {}) {
+  viewName = String(viewName || '').trim();
+  if (!qltdCanAccessView(viewName)) return null;
   let viewLoadPromise = null;
   qltdActiveView = viewName;
+  if (!options.skipPersist) setStoredLastView(viewName);
   ensureWeb07Panels();
   if (viewName === 'report') ensureDeptPlanPanel();
   document.body.classList.toggle('qltd-dashboard-mode', viewName === 'dashboard');
@@ -3505,14 +3581,19 @@ function renderDeptPlans(payload) {
     deptSelector.appendChild(option);
   });
 
-  const hasSelected = departments.some((dept) => (dept.deptCode || dept.sheetName) === qltdSelectedDeptCode);
-  qltdSelectedDeptCode = hasSelected ? qltdSelectedDeptCode : (departments[0].deptCode || departments[0].sheetName || '');
+  const projectCode = String(payload.projectCode || getStoredProjectCode() || '').trim();
+  const storedDeptCode = getStoredDeptCode(projectCode);
+  const preferredDeptCode = qltdSelectedDeptCode || storedDeptCode;
+  const hasSelected = departments.some((dept) => (dept.deptCode || dept.sheetName) === preferredDeptCode);
+  qltdSelectedDeptCode = hasSelected ? preferredDeptCode : (departments[0].deptCode || departments[0].sheetName || '');
+  setStoredDeptCode(projectCode, qltdSelectedDeptCode);
   deptSelector.value = qltdSelectedDeptCode;
   deptSelector.disabled = false;
   deptSelector.onchange = () => {
     content.innerHTML = '';
     resetDeptScopedSelectionState();
     qltdSelectedDeptCode = deptSelector.value;
+    setStoredDeptCode(projectCode, qltdSelectedDeptCode);
     renderSelectedDeptPlan();
   };
 
@@ -11840,7 +11921,8 @@ function renderApp(user, role, profile = {}, projects = []) {
   applyPermissions(effectiveProfile);
   ensureWeb07Panels();
   bindWeb07Navigation();
-  showWeb07View('dashboard', { skipDataLoad: true });
+  const initialView = resolveInitialViewForUser(effectiveProfile, currentPermissions);
+  showWeb07View(initialView, { skipDataLoad: true, skipPersist: true });
   renderProjectOptions(Array.isArray(projects) ? projects : []);
   qltdProjectsLoadPromise = Promise.resolve(qltdProjectRegistry);
 

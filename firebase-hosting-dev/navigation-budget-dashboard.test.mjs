@@ -28,11 +28,11 @@ assert.match(applyPermissions, /NAV_LABELS\.help/);
 assert.match(applyPermissions, /NAV_LABELS\.report/);
 
 const nav = latestFunction('ensureTopNavigation', 'ensureProjectSelector');
+assert.ok(nav.indexOf('NAV_LABELS.report') < nav.indexOf('NAV_LABELS.gantt'));
+assert.ok(nav.indexOf('NAV_LABELS.gantt') < nav.indexOf('NAV_LABELS.workDashboard'));
 assert.ok(nav.indexOf('NAV_LABELS.workDashboard') < nav.indexOf('NAV_LABELS.budgetDashboard'));
-assert.ok(nav.indexOf('NAV_LABELS.budgetDashboard') < nav.indexOf('NAV_LABELS.gantt'));
-assert.ok(nav.indexOf('NAV_LABELS.gantt') < nav.indexOf('NAV_LABELS.help'));
-assert.ok(nav.indexOf('NAV_LABELS.help') < nav.indexOf('NAV_LABELS.report'));
-assert.ok(nav.indexOf('NAV_LABELS.report') < nav.indexOf('NAV_LABELS.admin'));
+assert.ok(nav.indexOf('NAV_LABELS.budgetDashboard') < nav.indexOf('NAV_LABELS.help'));
+assert.ok(nav.indexOf('NAV_LABELS.help') < nav.indexOf('NAV_LABELS.admin'));
 
 const projectSelector = latestFunction('ensureProjectSelector', 'ensureDeptSelector');
 assert.match(projectSelector, /insertBefore\(wrapper, adminButton\)/);

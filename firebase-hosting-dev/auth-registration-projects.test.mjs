@@ -198,7 +198,8 @@ assert.match(extractFunction(appSource, 'fetchBackendJson'), /getIdToken\(forceR
 assert.match(extractFunction(appSource, 'fetchBackendJson'), /ID_TOKEN_INVALID/);
 assert.match(extractFunction(appSource, 'postBackendJson'), /getIdToken\(forceRefresh\)/);
 assert.match(extractFunction(appSource, 'loadProjectsForSelector'), /fetchBackendJson\('listProjects',[\s\S]*\{ auth: true \}/);
-assert.match(extractFunction(appSource, 'renderApp'), /showWeb07View\('dashboard', \{ skipDataLoad: true \}\)/);
+assert.match(extractFunction(appSource, 'renderApp'), /resolveInitialViewForUser\(effectiveProfile, currentPermissions\)/);
+assert.doesNotMatch(extractFunction(appSource, 'renderApp'), /showWeb07View\('dashboard'/);
 assert.match(extractFunction(appSource, 'renderApp'), /renderProjectOptions\(Array\.isArray\(projects\)/);
 assert.doesNotMatch(extractFunction(appSource, 'renderApp'), /loadProjectsForSelector\(\)|loadNotifications\(\)/);
 
@@ -216,9 +217,11 @@ const renderAppContext = vm.createContext({
     roleStatus: { textContent: '' }
   },
   formatRole: (role) => role,
+  currentPermissions: { dashboard: true, budgetDashboard: true, gantt: true, help: true, reportUpdate: true, admin: false },
   applyPermissions() {},
   ensureWeb07Panels() {},
   bindWeb07Navigation() {},
+  resolveInitialViewForUser: (profile) => ['REPORTER', 'EDITOR'].includes(String(profile?.role || '').toUpperCase()) ? 'report' : 'gantt',
   showWeb07View() {},
   qltdProjectRegistry: [],
   renderProjectOptions: (projects) => { renderAppContext.qltdProjectRegistry = projects; },
