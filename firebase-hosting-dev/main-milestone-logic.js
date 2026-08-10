@@ -1,3 +1,7 @@
+import { installGanttVisibleRangePatch } from './gantt-visible-range.js?v=GANTT_VISIBLE_RANGE_V1';
+
+installGanttVisibleRangePatch();
+
 function clean(value) {
   return String(value || '').trim();
 }
