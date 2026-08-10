@@ -13,6 +13,10 @@
 - Audit log phân biệt `HOME_DEPT`, `DELEGATED_ACCESS` và người thao tác thực tế.
 - Regression test cho thời hạn, scope, field whitelist, thiếu sheet, báo cáo tuần và các action bị cấm.
 
+### Fixed
+
+- Gantt khóa biên thời gian theo tập công việc đang hiển thị và mức Zoom, tránh tự thêm một đơn vị scale rỗng trước/sau dữ liệu; với Zoom Năm, dự án bắt đầu năm 2026 không còn hiển thị năm 2025.
+
 ### Security
 
 - Role, Phòng/Ban và tên hiển thị khi tự đăng ký được suy ra hoàn toàn từ nguồn nhân sự; payload client không còn quyết định quyền.
