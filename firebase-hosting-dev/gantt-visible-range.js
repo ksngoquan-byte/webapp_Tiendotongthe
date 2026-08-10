@@ -151,3 +151,5 @@ export function installGanttVisibleRangePatch() {
   observer.observe(document.head, { childList: true });
   return true;
 }
+
+installGanttVisibleRangePatch();
