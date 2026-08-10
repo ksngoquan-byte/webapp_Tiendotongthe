@@ -78,4 +78,31 @@ function iso(date) {
   globalThis.document = originalDocument;
 }
 
+{
+  const originalDocument = globalThis.document;
+  const existingStart = new Date(2025, 0, 1);
+  const existingEnd = new Date(2030, 0, 1);
+  globalThis.document = {
+    getElementById(id) {
+      if (id === 'ganttZoomSelect') return { value: 'year' };
+      if (id === 'ganttBaselineComparisonToggle') {
+        return {
+          getAttribute(name) { return name === 'aria-pressed' ? 'true' : null; },
+          classList: { contains() { return true; } }
+        };
+      }
+      return null;
+    }
+  };
+  const gantt = {
+    config: { fit_tasks: false, start_date: existingStart, end_date: existingEnd },
+    parse() { return 'baseline-ok'; }
+  };
+  patchGanttVisibleRange(gantt);
+  assert.equal(gantt.parse({ data: [{ start_date: '2026-03-13', end_date: '2026-09-30' }] }), 'baseline-ok');
+  assert.equal(gantt.config.start_date, existingStart, 'baseline range must remain owned by existing baseline logic');
+  assert.equal(gantt.config.end_date, existingEnd, 'baseline range must remain owned by existing baseline logic');
+  globalThis.document = originalDocument;
+}
+
 console.log('gantt-visible-range.test.mjs PASS');
