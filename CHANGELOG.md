@@ -16,6 +16,7 @@
 ### Fixed
 
 - Gantt khóa biên thời gian theo tập công việc đang hiển thị và mức Zoom, tránh tự thêm một đơn vị scale rỗng trước/sau dữ liệu; với Zoom Năm, dự án bắt đầu năm 2026 không còn hiển thị năm 2025.
+- Gantt không còn hiện tooltip lớn trên vùng timeline; thông tin xem nhanh chỉ xuất hiện khi rê vào tên công việc và chỉ gồm dữ liệu thực thi có giá trị. Công việc liên kết được resolve sang tên/nội dung công việc, không hiển thị ID/Ref kỹ thuật.
 
 ### Security
 
