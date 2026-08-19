@@ -10793,28 +10793,81 @@ async function initDhtmlxGantt(tasks, links) {
     }
   }
 
-  gantt.templates.tooltip_text = function(start, end, task) {
-    const comparisonHtml = qltdGanttBaselineBuildTooltipHtml_(task);
-    return `
-      <strong>${escapeHtml(task.text || '')}</strong><br>
-      WBS: ${escapeHtml(task.wbs || task.id || '')}<br>
-      Mã công việc: ${escapeHtml(task.code || '')}<br>
-      Chủ trì: ${escapeHtml(task.owner || '')}<br>
-      Trạng thái: ${escapeHtml(task.status || '')}<br>
-      Zone: ${escapeHtml(task.zone || '')}<br>
-      Công trình: ${escapeHtml(task.congTrinh || '')}<br>
-      Hạng mục: ${escapeHtml(task.hangMuc || '')}<br>
-      Context: ${escapeHtml(task.contextPath || '')}<br>
-      Bắt đầu kế hoạch: ${escapeHtml(formatIsoDateVi(task.baselineStart || task.start_date || ''))}<br>
-      Kết thúc kế hoạch: ${escapeHtml(formatIsoDateVi(task.baselineEnd || task.end_date || ''))}<br>
-      Bắt đầu thực tế: ${escapeHtml(formatIsoDateVi(task.actualStart || ''))}<br>
-      Hoàn thành thực tế: ${escapeHtml(formatIsoDateVi(task.actualEnd || ''))}<br>
-      Công việc liên kết: ${escapeHtml(task.predecessorRaw || '')}<br>
-      Ghi chú cập nhật: ${escapeHtml(task.updateNote || task.note || '')}
-      ${comparisonHtml}
-    `;
-  };
+  const ganttTooltipTaskTextById = {};
+  const ganttTooltipSourceTasks =
+    Array.isArray(qltdGanttPayload?.data)
+      ? qltdGanttPayload.data
+      : renderTasks;
 
+  ganttTooltipSourceTasks.forEach((item) => {
+    const id = String(item?.id || '');
+    const text = String(item?.text || '').trim();
+    if (id && text) ganttTooltipTaskTextById[id] = text;
+  });
+
+  const ganttTooltipPredecessors = {};
+  const ganttTooltipLinks =
+    Array.isArray(qltdGanttPayload?.links)
+      ? qltdGanttPayload.links
+      : (Array.isArray(links) ? links : []);
+
+  ganttTooltipLinks.forEach((link) => {
+    const targetId = String(link?.target || '');
+    const sourceText =
+      ganttTooltipTaskTextById[String(link?.source || '')];
+
+    if (!targetId || !sourceText) return;
+
+    if (!ganttTooltipPredecessors[targetId]) {
+      ganttTooltipPredecessors[targetId] = [];
+    }
+
+    if (!ganttTooltipPredecessors[targetId].includes(sourceText)) {
+      ganttTooltipPredecessors[targetId].push(sourceText);
+    }
+  });
+
+  gantt.templates.tooltip_text = function(start, end, task) {
+    const rows = [];
+
+    const addRow = (label, value) => {
+      const text = String(value || '').trim();
+      if (!text) return;
+      rows.push(`<strong>${label}:</strong> ${escapeHtml(text)}`);
+    };
+
+    addRow('Trạng thái', task.status);
+    addRow(
+      'Bắt đầu thực tế',
+      formatIsoDateVi(task.actualStart || '')
+    );
+    addRow(
+      'Hoàn thành thực tế',
+      formatIsoDateVi(task.actualEnd || task.actualFinish || '')
+    );
+
+    const predecessors =
+      ganttTooltipPredecessors[String(task.id)] || [];
+
+    if (predecessors.length) {
+      rows.push(
+        `<strong>Công việc liên kết:</strong><br>` +
+        predecessors
+          .map((name) => `&bull; ${escapeHtml(name)}`)
+          .join('<br>')
+      );
+    }
+
+    addRow(
+      'Ghi chú cập nhật',
+      task.updateNote || task.note
+    );
+
+    return (
+      rows.join('<br>') +
+      qltdGanttBaselineBuildTooltipHtml_(task)
+    );
+  };
   gantt.templates.task_text = function() {
     return '';
   };
@@ -10909,6 +10962,78 @@ async function initDhtmlxGantt(tasks, links) {
 
   try {
     gantt.parse({ data: renderTasks, links: links || [] });
+
+    const tooltips = gantt.ext?.tooltips;
+
+    if (
+      tooltips &&
+      typeof tooltips.detach === 'function' &&
+      typeof tooltips.tooltipFor === 'function'
+    ) {
+      const defaultTaskSelector =
+        `[${gantt.config.task_attribute}]:not(.gantt_task_row)`;
+
+      const gridTextSelector =
+        '.gantt_grid .gantt_tree_content';
+
+      tooltips.detach(defaultTaskSelector);
+
+      try {
+        tooltips.detach(gridTextSelector);
+      } catch (error) {
+        // First bind: no previous custom grid tooltip.
+      }
+
+      tooltips.tooltip?.hide?.();
+
+      const tooltipNode = tooltips.tooltip?.getNode?.();
+
+      if (tooltipNode) {
+        Object.assign(tooltipNode.style, {
+          maxWidth: '420px',
+          whiteSpace: 'normal',
+          lineHeight: '1.45',
+          background: '#ffffff',
+          color: '#0f172a',
+          border: '1px solid #cbd5e1',
+          borderRadius: '8px',
+          boxShadow: '0 8px 24px rgba(15,23,42,.15)'
+        });
+      }
+
+      tooltips.tooltipFor({
+        selector: gridTextSelector,
+
+        html: (event, node) => {
+          const taskNode =
+            node?.closest?.(
+              `[${gantt.config.task_attribute}]`
+            );
+
+          const taskId =
+            taskNode?.getAttribute?.(
+              gantt.config.task_attribute
+            );
+
+          if (!taskId || !gantt.isTaskExists(taskId)) {
+            return null;
+          }
+
+          const task = gantt.getTask(taskId);
+
+          const html =
+            gantt.templates.tooltip_text(
+              task.start_date,
+              task.end_date,
+              task
+            );
+
+          return html || null;
+        },
+
+        global: false
+      });
+    }
   } catch (error) {
     console.error('WEB07F: gantt.parse failed', error);
     renderGanttFallback(container, tasks, 'DHTMLX gặp lỗi khi đọc dữ liệu, đang hiển thị bảng fallback.');
