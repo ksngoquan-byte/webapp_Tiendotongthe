@@ -10816,14 +10816,30 @@ async function initDhtmlxGantt(tasks, links) {
     const sourceText =
       ganttTooltipTaskTextById[String(link?.source || '')];
 
+    const relation = String(
+      link?.relation ||
+      relationFromDhtmlxType(link?.type) ||
+      'FS'
+    ).toUpperCase();
+
     if (!targetId || !sourceText) return;
 
     if (!ganttTooltipPredecessors[targetId]) {
       ganttTooltipPredecessors[targetId] = [];
     }
 
-    if (!ganttTooltipPredecessors[targetId].includes(sourceText)) {
-      ganttTooltipPredecessors[targetId].push(sourceText);
+    const exists =
+      ganttTooltipPredecessors[targetId].some(
+        (item) =>
+          item.name === sourceText &&
+          item.relation === relation
+      );
+
+    if (!exists) {
+      ganttTooltipPredecessors[targetId].push({
+        name: sourceText,
+        relation
+      });
     }
   });
 
@@ -10853,7 +10869,11 @@ async function initDhtmlxGantt(tasks, links) {
       rows.push(
         `<strong>Công việc liên kết:</strong><br>` +
         predecessors
-          .map((name) => `&bull; ${escapeHtml(name)}`)
+          .map(
+            (item) =>
+              `&bull; ${escapeHtml(item.name)} ` +
+              `<strong>(${escapeHtml(item.relation)})</strong>`
+          )
           .join('<br>')
       );
     }
