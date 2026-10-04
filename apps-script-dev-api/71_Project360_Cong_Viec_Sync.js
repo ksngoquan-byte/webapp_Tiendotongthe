@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Dormant one-way Cong_viec -> Project360 client. No trigger/schema/HTTP work on load.
  * Uses its own handlers; the existing Schedule Engine and trigger installers are unchanged.
  */
@@ -274,4 +274,3 @@ function installProject360CongViecSyncTriggers() {
   });
   return { installed: true };
 }
-
